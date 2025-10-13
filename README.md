@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Multimodal Emotion Recognition with Audio and Text
 
 A comprehensive multimodal emotion recognition system that extends the original audio-only Emotion2Vec classification system to support text and multimodal fusion approaches.
@@ -362,3 +363,7 @@ Potential extensions:
 - Late fusion approaches
 - Multi-task learning with VAD prediction
 - Real-time inference pipeline
+=======
+# Emotion2VecBert
+Emotion2vec Cross attention with BERT and curriculum learning
+>>>>>>> a948dd403d1fd98f6ef3778bfbaa19ea20e2e83f
