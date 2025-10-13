@@ -1,0 +1,71 @@
+# Text-Only Emotion Recognition Configuration
+# Uses BERT-based text encoding with the optimal training strategy
+
+wandb_project: "Multimodal_Emotion_Text_Only"
+
+template_config: &template
+  # Training hyperparameters
+  learning_rate: 9e-3
+  weight_decay: 5e-6
+  num_epochs: 30
+  batch_size: 64
+  dropout: 0.1
+
+  # Dataset settings
+  train_dataset: "IEMO"
+  evaluation_mode: "cross_corpus"
+
+  # Modality settings
+  modality: "text"
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 128
+
+  # Model architecture
+  hidden_dim: 1024
+  num_classes: 4
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Curriculum learning settings
+  use_curriculum_learning: true
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+
+  # Advanced features
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+experiments:
+  - <<: *template
+    name: "Text Full System IEMO"
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  - <<: *template
+    name: "Text Baseline IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "Text with RoBERTa IEMO"
+    text_model_name: "roberta-base"
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
