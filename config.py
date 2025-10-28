@@ -33,8 +33,22 @@ class Config:
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
 
+        # Learning rate scheduler settings
+        self.lr_scheduler = "cosine"  # "cosine", "step", "plateau", "exponential", "none"
+        self.lr_scheduler_T_max = None  # For CosineAnnealingLR (defaults to num_epochs if None)
+        self.lr_scheduler_step_size = 10  # For StepLR
+        self.lr_scheduler_gamma = 0.1  # For StepLR and ExponentialLR
+        self.lr_scheduler_patience = 5  # For ReduceLROnPlateau
+        self.lr_scheduler_factor = 0.5  # For ReduceLROnPlateau
+
+        # Early stopping settings
+        self.use_early_stopping = False
+        self.early_stopping_patience = 10  # Number of epochs with no improvement
+        self.early_stopping_min_delta = 0.001  # Minimum change to qualify as improvement
+
         # Dataset settings
-        self.train_dataset = "MSPI"  # or "IEMO" or "MSPP"
+        self.train_dataset = "MSPI"  # Single dataset: "IEMO", "MSPI", "MSPP", "CMUMOSEI", "SAMSEMO"
+                                     # Multiple datasets: ["IEMO", "MSPI"] or ["IEMO", "MSPI", "MSPP"]
 
         # Evaluation settings
         self.evaluation_mode = "both"  # "loso", "cross_corpus", "both"
@@ -77,6 +91,13 @@ class Config:
         # Random seed(s) - can be single seed or list of seeds
         self.seeds = [42]  # Default single seed, can be [42, 123, 456] for multi-seed experiments
         self.seed = 42  # Backward compatibility
+
+        # Loss function settings
+        self.loss_temperature = 2000  # Temperature for FocalLoss (lower = sharper, higher = softer)
+        self.focal_gamma = 2.0  # Focal loss gamma parameter
+
+        # Post-curriculum dropout
+        self.post_curriculum_dropout = 0.6  # Dropout rate after curriculum learning completes
 
     def __repr__(self):
         """String representation of config"""

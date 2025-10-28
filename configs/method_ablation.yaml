@@ -1,0 +1,173 @@
+# Fusion Ablation Study Configuration
+# Compare different fusion mechanisms for multimodal emotion recognition
+
+
+template_config: &template
+  # Training hyperparameters (optimal)
+  learning_rate: 1e-5
+  weight_decay: 5e-6
+  num_epochs: 30
+  batch_size: 64
+  dropout: 0.1
+
+  # Dataset settings
+  train_dataset: "IEMO"
+  evaluation_mode: "cross_corpus"
+
+  # Multimodal settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 128
+
+  # Model architecture
+  hidden_dim: 1024
+  num_classes: 4
+
+  # Fusion settings (will be overridden per experiment)
+  fusion_hidden_dim: 512
+  num_attention_heads: 8
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Optimal training strategy
+  use_curriculum_learning: true
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+  wandb_project: "Method_ablation_v2"
+  seeds: [42,32, 512]
+  post_curriculum_dropout: 0.6
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+experiments:
+  - <<: *template
+    name: "IEMO Cross-Attention 1024"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "IEMO"
+    post_curriculum_dropout: 0.1
+
+  - <<: *template
+    name: "IEMO Cross-Attention 1024 baseline"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    post_curriculum_dropout: 0.1
+
+## AUDIO
+  - <<: *template
+    name: "IEMO Audio 1024"
+    train_dataset: "IEMO"
+    modality: "audio"
+    learning_rate: 9e-3
+
+  - <<: *template
+    name: "IEMO Audio 1024 baseline"
+
+    train_dataset: "IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    modality: "audio"
+    learning_rate: 9e-3
+
+  - <<: *template
+    name: "IEMO Text 1024"
+
+    train_dataset: "IEMO"
+    modality: "text"
+    learning_rate: 9e-3
+    post_curriculum_dropout: 0.6
+
+
+
+  - <<: *template
+    name: "IEMO Text 1024 baseline"
+
+    train_dataset: "IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    modality: "text"
+    learning_rate: 9e-3
+    post_curriculum_dropout: 0.6
+
+
+
+  # MSPI EXPERIMENTS ####################################
+  - <<: *template
+    name: "MSPI Cross-Attention 1024"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "MSPI"
+    post_curriculum_dropout: 0.1
+
+  - <<: *template
+    name: "MSPI Cross-Attention 1024 baseline"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    post_curriculum_dropout: 0.1
+  
+  - <<: *template
+    name: "MSPI Audio 1024"
+    learning_rate: 9e-3
+    train_dataset: "MSPI"
+    modality: "audio"
+
+  - <<: *template
+    name: "MSPI Audio 1024 baseline"
+    learning_rate: 9e-3
+    train_dataset: "MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    modality: "audio"
+
+  - <<: *template
+    name: "MSPI Text 1024"
+
+    train_dataset: "MSPI"
+    modality: "text"
+    learning_rate: 9e-3
+    post_curriculum_dropout: 0.6
+
+
+
+  - <<: *template
+    name: "MSPI Text 1024 baseline"
+
+    train_dataset: "MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    modality: "text"
+    learning_rate: 9e-3
+    post_curriculum_dropout: 0.6
+

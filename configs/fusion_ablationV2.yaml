@@ -1,7 +1,6 @@
 # Fusion Ablation Study Configuration
 # Compare different fusion mechanisms for multimodal emotion recognition
 
-wandb_project: "MultiModel_FusionAblation"
 
 template_config: &template
   # Training hyperparameters (optimal)
@@ -45,7 +44,8 @@ template_config: &template
   difficulty_method: "euclidean_distance"
   use_difficulty_scaling: true
   use_speaker_disentanglement: true
-  wandb_project: "MultiModel_FusionAblation"
+  wandb_project: "TARGETED_MultiModel_FusionAblation"
+  seeds: [42,87739, 1829]
 
   # Expected VAD values
   expected_vad:
@@ -55,50 +55,69 @@ template_config: &template
     3: [1.8, 4.2, 4.0]  # anger
 
 experiments:
-  # Main fusion mechanisms
+  #IEMO EXPERIMENTS
   - <<: *template
-    name: "Cross-Attention Fusion"
-    fusion_type: "cross_attention"
-    fusion_hidden_dim: 512
-    num_attention_heads: 8
-
-  - <<: *template
-    name: "Simple Concat Fusion"
+    name: "IEMO Simple Concat Fusion Full"
     fusion_type: "concat"
     fusion_hidden_dim: 512
+    train_dataset: "IEMO"
 
   - <<: *template
-    name: "Gated Fusion"
-    fusion_type: "gated"
+    name: "IEMO Simple Concat baseline"
+    fusion_type: "concat"
     fusion_hidden_dim: 512
+    train_dataset: "IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
 
   - <<: *template
-    name: "Adaptive Fusion"
-    fusion_type: "adaptive"
-    fusion_hidden_dim: 512
-
-  # Cross-attention with different hidden dimensions
-  - <<: *template
-    name: "Cross-Attention 256"
-    fusion_type: "cross_attention"
-    fusion_hidden_dim: 256
-    num_attention_heads: 4
-
-  - <<: *template
-    name: "Cross-Attention 1024"
+    name: "IEMO Cross-Attention 1024"
     fusion_type: "cross_attention"
     fusion_hidden_dim: 1024
     num_attention_heads: 16
-
-  # Cross-attention with different attention heads
-  - <<: *template
-    name: "Cross-Attention 4-heads"
-    fusion_type: "cross_attention"
-    fusion_hidden_dim: 512
-    num_attention_heads: 4
+    train_dataset: "IEMO"
 
   - <<: *template
-    name: "Cross-Attention 16-heads"
+    name: "IEMO Cross-Attention 1024 baseline"
     fusion_type: "cross_attention"
-    fusion_hidden_dim: 512
+    fusion_hidden_dim: 1024
     num_attention_heads: 16
+    train_dataset: "IEMO"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  # MSPI EXPERIMENTS ####################################
+
+  - <<: *template
+    name: "MSPI Simple Concat Fusion Full"
+    fusion_type: "concat"
+    fusion_hidden_dim: 512
+    train_dataset: "MSPI"
+
+  - <<: *template
+    name: "MSPI Simple Concat baseline"
+    fusion_type: "concat"
+    fusion_hidden_dim: 512
+    train_dataset: "MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "MSPI Cross-Attention 1024"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "MSPI"
+
+  - <<: *template
+    name: "MSPI Cross-Attention 1024 baseline"
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 1024
+    num_attention_heads: 16
+    train_dataset: "MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false

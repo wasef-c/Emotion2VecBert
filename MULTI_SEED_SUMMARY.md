@@ -132,7 +132,7 @@ Your WandB Project/
 
 ### Scenario 2: Multiple Test Datasets
 
-For IEMO → [MSPI, MSPP]:
+For IEMO → [MSPI, MSPP, CMUMOSEI, SAMSEMO]:
 
 **Averaged Run Contains:**
 - `AVERAGED/IEMOtoMSPI_accuracy_mean`
@@ -143,6 +143,14 @@ For IEMO → [MSPI, MSPP]:
 - `AVERAGED/IEMOtoMSPP_accuracy_std`
 - `AVERAGED/IEMOtoMSPP_uar_mean`
 - `AVERAGED/IEMOtoMSPP_uar_std`
+- `AVERAGED/IEMOtoCMUMOSEI_accuracy_mean`
+- `AVERAGED/IEMOtoCMUMOSEI_accuracy_std`
+- `AVERAGED/IEMOtoCMUMOSEI_uar_mean`
+- `AVERAGED/IEMOtoCMUMOSEI_uar_std`
+- `AVERAGED/IEMOtoSAMSEMO_accuracy_mean`
+- `AVERAGED/IEMOtoSAMSEMO_accuracy_std`
+- `AVERAGED/IEMOtoSAMSEMO_uar_mean`
+- `AVERAGED/IEMOtoSAMSEMO_uar_std`
 
 ## Computational Cost
 

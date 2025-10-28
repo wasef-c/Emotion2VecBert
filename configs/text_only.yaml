@@ -1,13 +1,13 @@
 # Text-Only Emotion Recognition Configuration
 # Uses BERT-based text encoding with the optimal training strategy
 
-wandb_project: "Multimodal_Emotion_Text_Only"
 
 template_config: &template
   # Training hyperparameters
-  learning_rate: 9e-3
+  seeds: [42, 123, 456, 3, 908, 378]
+  learning_rate: 1e-5
   weight_decay: 5e-6
-  num_epochs: 30
+  num_epochs: 40
   batch_size: 64
   dropout: 0.1
 
@@ -19,7 +19,7 @@ template_config: &template
   modality: "text"
   text_model_name: "bert-base-uncased"
   freeze_text_encoder: true
-  text_max_length: 128
+  text_max_length: 1024
 
   # Model architecture
   hidden_dim: 1024
@@ -42,6 +42,8 @@ template_config: &template
   # Advanced features
   use_difficulty_scaling: true
   use_speaker_disentanglement: true
+  
+  wandb_project: "Text_Only_thesis_final"
 
   # Expected VAD values
   expected_vad:
@@ -50,22 +52,53 @@ template_config: &template
     2: [1.8, 2.2, 2.0]  # sad
     3: [1.8, 4.2, 4.0]  # anger
 
+  post_curriculum_dropout: 0.1
+
 experiments:
   - <<: *template
-    name: "Text Full System IEMO"
+    name: "BERT Full System IEMO"
     use_curriculum_learning: true
     use_difficulty_scaling: true
     use_speaker_disentanglement: true
+    curriculum_epochs: 15
+    train_dataset: "IEMO"
 
   - <<: *template
-    name: "Text Baseline IEMO"
+    name: "BERT Baseline IEMO"
     use_curriculum_learning: false
     use_difficulty_scaling: false
     use_speaker_disentanglement: false
+    train_dataset: "IEMO"
 
   - <<: *template
-    name: "Text with RoBERTa IEMO"
-    text_model_name: "roberta-base"
+    name: "BERT Full System MSPI"
     use_curriculum_learning: true
     use_difficulty_scaling: true
     use_speaker_disentanglement: true
+    curriculum_epochs: 15
+    train_dataset: "MSPI"
+
+  - <<: *template
+    name: "BERT Baseline MSPI"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    train_dataset: "MSPI"
+
+
+
+  - <<: *template
+    name: "BERT Full System MSPP"
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+    curriculum_epochs: 15
+    train_dataset: "MSPP"
+
+  - <<: *template
+    name: "BERT Baseline MSPP"
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    train_dataset: "MSPP"
+

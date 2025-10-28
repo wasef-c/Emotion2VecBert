@@ -1,0 +1,128 @@
+# Multi-Dataset Training Configuration
+# Train on combinations of datasets to improve generalization
+# NOTE: Only IEMO, MSPI, and MSPP have VAD values required for difficulty-based curriculum learning
+# CMUMOSEI and SAMSEMO are excluded from training but used for testing
+
+template: &template
+  # Training hyperparameters
+  learning_rate: 1e-5
+  weight_decay: 5e-6
+  num_epochs: 30
+  batch_size: 64
+  dropout: 0.1
+
+  # Evaluation mode (LOSO not supported for multi-dataset training)
+  evaluation_mode: "cross_corpus"
+
+  # Multimodal settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 128
+
+  # Model architecture
+  hidden_dim: 1024
+  num_classes: 4
+
+  # Best performing fusion settings (from method ablation)
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Training strategy (will be overridden per experiment)
+  use_curriculum_learning: true
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+
+  wandb_project: "MultiDataset_Training_V2"
+  seeds: [42, 37, 645]
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+experiments:
+  # ============================================
+  # Two-Dataset Combinations
+  # Each has BASELINE and FULL version
+  # ============================================
+
+  # IEMO + MSPI
+  - <<: *template
+    name: "IEMO+MSPI_CrossAttn_Baseline"
+    train_dataset: ["IEMO", "MSPI"]
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "IEMO+MSPI_CrossAttn_Full"
+    train_dataset: ["IEMO", "MSPI"]
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  # IEMO + MSPP
+  - <<: *template
+    name: "IEMO+MSPP_CrossAttn_Baseline"
+    train_dataset: ["IEMO", "MSPP"]
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "IEMO+MSPP_CrossAttn_Full"
+    train_dataset: ["IEMO", "MSPP"]
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  # MSPI + MSPP
+  - <<: *template
+    name: "MSPI+MSPP_CrossAttn_Baseline"
+    train_dataset: ["MSPI", "MSPP"]
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "MSPI+MSPP_CrossAttn_Full"
+    train_dataset: ["MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  # ============================================
+  # All Three Datasets (Maximum Training Data)
+  # ============================================
+
+  - <<: *template
+    name: "IEMO+MSPI+MSPP_CrossAttn_Baseline"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+
+  - <<: *template
+    name: "IEMO+MSPI+MSPP_CrossAttn_Full"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  # ======================

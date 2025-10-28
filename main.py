@@ -73,7 +73,18 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
     config = Config()
 
     # Define type conversions for config parameters
-    float_params = ["learning_rate", "weight_decay", "dropout", "val_split"]
+    float_params = [
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "val_split",
+        "loss_temperature",
+        "focal_gamma",
+        "post_curriculum_dropout",
+        "lr_scheduler_gamma",
+        "lr_scheduler_factor",
+        "early_stopping_min_delta",
+    ]
     int_params = [
         "batch_size",
         "num_epochs",
@@ -84,12 +95,16 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
         "fusion_hidden_dim",
         "num_attention_heads",
         "text_max_length",
+        "lr_scheduler_step_size",
+        "lr_scheduler_patience",
+        "early_stopping_patience",
     ]
     bool_params = [
         "use_curriculum_learning",
         "use_difficulty_scaling",
         "use_speaker_disentanglement",
         "freeze_text_encoder",
+        "use_early_stopping",
     ]
     string_params = [
         "wandb_project",
@@ -100,6 +115,7 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
         "modality",
         "text_model_name",
         "fusion_type",
+        "lr_scheduler",
     ]
 
     # Update config with YAML values with proper type conversion
@@ -162,7 +178,7 @@ def run_all_experiments_from_yaml(yaml_path):
 
         try:
             config = load_config_from_yaml(yaml_path, i)
-            result = run_experiment(config)
+            result = run_experiment_with_seeds(config)
             results.append(
                 {
                     "experiment_id": i,
@@ -211,6 +227,114 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
+def create_lr_scheduler(optimizer, config):
+    """
+    Create learning rate scheduler based on config
+
+    Args:
+        optimizer: PyTorch optimizer
+        config: Config object with scheduler settings
+
+    Returns:
+        scheduler: Learning rate scheduler or None
+    """
+    scheduler_type = getattr(config, "lr_scheduler", "cosine").lower()
+
+    if scheduler_type == "cosine":
+        scheduler = lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max= config.num_epochs
+        )
+    elif scheduler_type == "step":
+        step_size = getattr(config, "lr_scheduler_step_size", 10)
+        gamma = getattr(config, "lr_scheduler_gamma", 0.1)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif scheduler_type == "exponential":
+        gamma = getattr(config, "lr_scheduler_gamma", 0.95)
+        scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    elif scheduler_type == "plateau":
+        patience = getattr(config, "lr_scheduler_patience", 5)
+        factor = getattr(config, "lr_scheduler_factor", 0.5)
+        scheduler = lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",  # Maximize UAR
+            factor=factor,
+            patience=patience,
+            verbose=True,
+        )
+    elif scheduler_type == "none":
+        scheduler = None
+    else:
+        print(f"⚠️  Unknown scheduler type '{scheduler_type}', using CosineAnnealingLR")
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
+
+    return scheduler
+
+
+class EarlyStopping:
+    """Early stopping to stop training when validation metric stops improving"""
+
+    def __init__(self, patience=10, min_delta=0.001, mode="max", start_epoch=0):
+        """
+        Args:
+            patience: Number of epochs to wait for improvement
+            min_delta: Minimum change to qualify as improvement
+            mode: 'max' for metrics like accuracy/UAR, 'min' for loss
+            start_epoch: Epoch to start checking (e.g., after curriculum learning)
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.start_epoch = start_epoch
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, score, epoch):
+        """
+        Check if training should stop
+
+        Args:
+            score: Current validation metric
+            epoch: Current epoch number
+
+        Returns:
+            bool: True if training should stop
+        """
+        # Don't check early stopping until after start_epoch
+        if epoch < self.start_epoch:
+            return False
+
+        if self.best_score is None:
+            self.best_score = score
+            return False
+
+        if self.mode == "max":
+            improved = score > self.best_score + self.min_delta
+        else:  # mode == 'min'
+            improved = score < self.best_score - self.min_delta
+
+        if improved:
+            self.best_score = score
+            self.counter = 0
+            return False
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+                print(
+                    f"\n⏹️  Early stopping triggered after {self.counter} epochs without improvement"
+                )
+                print(
+                    f"   Best score: {self.best_score:.4f}, Current score: {score:.4f}"
+                )
+                return True
+            else:
+                print(
+                    f"   Early stopping: {self.counter}/{self.patience} epochs without improvement"
+                )
+            return False
+
+
 def run_experiment(config):
     """Run a single experiment with given config"""
     # Set seed for reproducibility
@@ -227,16 +351,64 @@ def run_experiment(config):
     print(f"📊 Evaluation Mode: {config.evaluation_mode.upper()}")
     print(f"🎭 Modality: {getattr(config, 'modality', 'audio').upper()}")
 
+    # Handle multiple training datasets
+    train_datasets_list = (
+        config.train_dataset
+        if isinstance(config.train_dataset, list)
+        else [config.train_dataset]
+    )
+
     # Load datasets
-    if config.train_dataset == "MSPI":
+    if len(train_datasets_list) > 1:
+        # Multiple training datasets - concatenate them
+        print(f"🔗 Training on multiple datasets: {', '.join(train_datasets_list)}")
+        individual_datasets = []
+        for dataset_name in train_datasets_list:
+            individual_datasets.append(
+                SimpleEmotionDataset(dataset_name, config=config, Train=True)
+            )
+        train_dataset = ConcatenatedDataset(individual_datasets)
+
+        # For cross-corpus evaluation, test on all datasets NOT in training
+        all_datasets = ["IEMO", "MSPI", "MSPP", "CMUMOSEI", "SAMSEMO"]
+        test_dataset_names = [d for d in all_datasets if d not in train_datasets_list]
+
+        if config.evaluation_mode == "cross_corpus":
+            test_datasets = [
+                SimpleEmotionDataset(name, config=config) for name in test_dataset_names
+            ]
+            print(
+                f"🚀 Training: {'+'.join(train_datasets_list)} -> {test_dataset_names}"
+            )
+        elif config.evaluation_mode == "loso":
+            # LOSO not supported for multi-dataset training
+            raise ValueError(
+                "LOSO evaluation not supported with multiple training datasets. Use 'cross_corpus' or 'both' mode."
+            )
+        else:
+            # For "both" mode, we'll do cross-corpus only
+            test_datasets = [
+                SimpleEmotionDataset(name, config=config) for name in test_dataset_names
+            ]
+            print(
+                f"🚀 Training: {'+'.join(train_datasets_list)} -> {test_dataset_names}"
+            )
+            print(
+                f"⚠️  Note: LOSO not available with multiple training datasets, using cross-corpus only"
+            )
+            config.evaluation_mode = "cross_corpus"  # Override to cross_corpus
+
+    elif config.train_dataset == "MSPI":
         train_dataset = SimpleEmotionDataset("MSPI", config=config, Train=True)
         # For cross-corpus, we want to test on both other datasets
         if config.evaluation_mode == "cross_corpus":
             test_datasets = [
                 SimpleEmotionDataset("IEMO", config=config),
                 SimpleEmotionDataset("MSPP", config=config),
+                SimpleEmotionDataset("CMUMOSEI", config=config),
+                SimpleEmotionDataset("SAMSEMO", config=config),
             ]
-            print(f"🚀 Training: MSPI -> [IEMO, MSPP]")
+            print(f"🚀 Training: MSPI -> [IEMO, MSPP, CMUMOSEI, SAMSEMO]")
         else:
             test_dataset = SimpleEmotionDataset("IEMO", config=config)
             print(f"🚀 Training: MSPI -> IEMO")
@@ -246,8 +418,10 @@ def run_experiment(config):
             test_datasets = [
                 SimpleEmotionDataset("MSPI", config=config),
                 SimpleEmotionDataset("MSPP", config=config),
+                SimpleEmotionDataset("CMUMOSEI", config=config),
+                SimpleEmotionDataset("SAMSEMO", config=config),
             ]
-            print(f"🚀 Training: IEMO -> [MSPI, MSPP]")
+            print(f"🚀 Training: IEMO -> [MSPI, MSPP, CMUMOSEI, SAMSEMO]")
         else:
             test_dataset = SimpleEmotionDataset("MSPI", config=config)
             print(f"🚀 Training: IEMO -> MSPI")
@@ -257,8 +431,10 @@ def run_experiment(config):
             test_datasets = [
                 SimpleEmotionDataset("IEMO", config=config),
                 SimpleEmotionDataset("MSPI", config=config),
+                SimpleEmotionDataset("CMUMOSEI", config=config),
+                SimpleEmotionDataset("SAMSEMO", config=config),
             ]
-            print(f"🚀 Training: MSPP -> [IEMO, MSPI]")
+            print(f"🚀 Training: MSPP -> [IEMO, MSPI, CMUMOSEI, SAMSEMO]")
         else:
             test_dataset = SimpleEmotionDataset("IEMO", config=config)
             print(f"🚀 Training: MSPP -> IEMO")
@@ -372,6 +548,63 @@ def run_experiment(config):
     return results
 
 
+class ConcatenatedDataset(Dataset):
+    """
+    Concatenates multiple SimpleEmotionDataset instances
+    Useful for training on multiple datasets simultaneously
+    """
+
+    def __init__(self, datasets):
+        """
+        Args:
+            datasets: List of SimpleEmotionDataset instances
+        """
+        self.datasets = datasets
+        self.dataset_name = "+".join([d.dataset_name for d in datasets])
+
+        # Concatenate all data
+        self.data = []
+        for dataset in datasets:
+            self.data.extend(dataset.data)
+
+        print(f"✅ Concatenated {len(datasets)} datasets: {self.dataset_name}")
+        print(f"   Total samples: {len(self.data)}")
+
+        # Print per-dataset statistics
+        start_idx = 0
+        for dataset in datasets:
+            end_idx = start_idx + len(dataset.data)
+            print(
+                f"   {dataset.dataset_name}: {len(dataset.data)} samples (indices {start_idx}-{end_idx-1})"
+            )
+            start_idx = end_idx
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        result = {
+            "label": torch.tensor(item["label"], dtype=torch.long),
+            "speaker_id": item["speaker_id"],
+            "session": item["session"],
+            "dataset": item["dataset"],
+            "difficulty": item["difficulty"],
+            "curriculum_order": item["curriculum_order"],
+            "sequence_length": item["sequence_length"],
+        }
+
+        # Add modality-specific data
+        modality = self.datasets[0].modality  # All datasets share same modality
+        if modality in ["audio", "both"]:
+            result["features"] = item["features"]
+
+        if modality in ["text", "both"]:
+            result["transcript"] = item["transcript"]
+
+        return result
+
+
 class SimpleEmotionDataset(Dataset):
     """
     Dataset class for multimodal emotion recognition
@@ -382,20 +615,20 @@ class SimpleEmotionDataset(Dataset):
         self.dataset_name = dataset_name
         self.split = split
         self.config = config
-        self.modality = getattr(config, 'modality', 'audio')
+        self.modality = getattr(config, "modality", "audio")
 
         # Load HuggingFace dataset
         if dataset_name == "IEMO":
             self.hf_dataset = load_dataset(
-                "cairocode/IEMO_Emotion2Vec", split=split, trust_remote_code=True
+                "cairocode/IEMO_Emotion2Vec_Text", split=split, trust_remote_code=True
             )
         elif dataset_name == "MSPI":
             self.hf_dataset = load_dataset(
-                "cairocode/MSPI_Emotion2Vec", split=split, trust_remote_code=True
+                "cairocode/MSPI_Emotion2Vec_Text", split=split, trust_remote_code=True
             )
         elif dataset_name == "MSPP":
             self.hf_dataset = load_dataset(
-                "cairocode/MSPP_Emotion2Vec_V3",
+                "cairocode/MSPP_Emotion2Vec_Text",
                 split=split,
                 trust_remote_code=True,
             )
@@ -436,8 +669,14 @@ class SimpleEmotionDataset(Dataset):
 
             # Extract transcript for text or multimodal mode
             if self.modality in ["text", "both"]:
-                transcript = item.get("transcript", "")
-                # Handle None or missing transcripts
+                # 1. Try to get the 'transcript'
+                transcript = item.get("transcript")
+
+                # 2. If 'transcript' is missing or None, try 'text' as a fallback
+                if transcript is None or transcript == "":
+                    transcript = item.get("text")
+
+                # 3. Handle cases where both 'transcript' and 'text' are missing/empty
                 if transcript is None or transcript == "":
                     transcript = "[EMPTY]"  # Placeholder for missing transcripts
             else:
@@ -455,6 +694,16 @@ class SimpleEmotionDataset(Dataset):
                 elif self.dataset_name == "MSPP":
                     speaker_id = item["SpkrID"]
                     session = (speaker_id - 1) // 500 + 1
+                elif self.dataset_name == "CMUMOSEI":
+                    # CMU-MOSEI has video_id field
+                    speaker_id = hash(item.get("video_id", "unknown")) % 10000
+                    session = (speaker_id - 1) // 100 + 1
+                elif self.dataset_name == "SAMSEMO":
+                    # SAMSEMO may have speaker_id or file_name
+                    speaker_id = item.get(
+                        "speaker_id", hash(item.get("file_name", "unknown")) % 10000
+                    )
+                    session = (speaker_id - 1) // 100 + 1
                 else:
                     # Fallback for other datasets
                     try:
@@ -578,15 +827,21 @@ def train_epoch(
         text_encoder.eval()
 
     # Verify dropout is active
-    if hasattr(model, 'dropout'):
-        print(f"      Training with dropout rate: {model.dropout.p:.3f}, training mode: {model.training}")
+    if hasattr(model, "dropout"):
+        print(
+            f"      Training with dropout rate: {model.dropout.p:.3f}, training mode: {model.training}"
+        )
 
     total_loss = 0
     predictions = []
     labels = []
 
-    modality = getattr(config, 'modality', 'audio')
-    text_max_length = getattr(config, 'text_max_length', 128)
+    # Track batch statistics for debugging
+    batch_num = 0
+    print_every_n_batches = max(1, len(data_loader) // 3)  # Print 3 times per epoch
+
+    modality = getattr(config, "modality", "audio")
+    text_max_length = getattr(config, "text_max_length", 128)
 
     for batch in data_loader:
         batch_labels = batch["label"].to(device)
@@ -605,18 +860,22 @@ def train_epoch(
             transcripts = batch["transcript"]
 
             # Tokenize text
-            if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+            if hasattr(model, "text_encoder") and model.text_encoder is not None:
                 # Model has integrated text encoder
                 input_ids, attention_mask = model.text_encoder.tokenize_batch(
                     transcripts, max_length=text_max_length, device=device
                 )
-                logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                logits = model(
+                    text_input_ids=input_ids, text_attention_mask=attention_mask
+                )
             elif text_encoder is not None:
                 # External text encoder
                 input_ids, attention_mask = text_encoder.tokenize_batch(
                     transcripts, max_length=text_max_length, device=device
                 )
-                logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                logits = model(
+                    text_input_ids=input_ids, text_attention_mask=attention_mask
+                )
             else:
                 raise ValueError("Text encoder not available for text-only mode")
 
@@ -626,7 +885,7 @@ def train_epoch(
             transcripts = batch["transcript"]
 
             # Tokenize text
-            if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+            if hasattr(model, "text_encoder") and model.text_encoder is not None:
                 # Model has integrated text encoder
                 input_ids, attention_mask = model.text_encoder.tokenize_batch(
                     transcripts, max_length=text_max_length, device=device
@@ -634,7 +893,7 @@ def train_epoch(
                 logits = model(
                     audio_features=features,
                     text_input_ids=input_ids,
-                    text_attention_mask=attention_mask
+                    text_attention_mask=attention_mask,
                 )
             elif text_encoder is not None:
                 # External text encoder
@@ -644,7 +903,7 @@ def train_epoch(
                 logits = model(
                     audio_features=features,
                     text_input_ids=input_ids,
-                    text_attention_mask=attention_mask
+                    text_attention_mask=attention_mask,
                 )
             else:
                 raise ValueError("Text encoder not available for multimodal mode")
@@ -654,6 +913,24 @@ def train_epoch(
         # Calculate loss
         loss_per_sample = criterion(logits, batch_labels)  # reduction='none'
         loss = loss_per_sample.mean()
+
+        # Track predictions for metrics
+        preds = torch.argmax(logits, dim=-1).cpu().numpy()
+        predictions.extend(preds)
+        labels.extend(batch_labels.cpu().numpy())
+
+        # # Debug logging for first few batches
+        # if batch_num % print_every_n_batches == 0:
+        #     with torch.no_grad():
+        #         probs = torch.softmax(logits, dim=-1)
+        #         print(f"\n      Batch {batch_num}:")
+        #         print(f"        Logits stats: min={logits.min().item():.3f}, max={logits.max().item():.3f}, mean={logits.mean().item():.3f}")
+        #         print(f"        Probs stats: min={probs.min().item():.3f}, max={probs.max().item():.3f}")
+        #         print(f"        Predicted labels: {preds[:8]}")  # First 8 predictions
+        #         print(f"        True labels:      {batch_labels[:8].cpu().numpy()}")
+        #         print(f"        Label distribution in batch: {np.bincount(batch_labels.cpu().numpy(), minlength=4)}")
+        #         print(f"        Prediction distribution: {np.bincount(preds, minlength=4)}")
+        #         print(f"        Loss: {loss.item():.4f}")
 
         loss.backward()
         optimizer.step()
@@ -669,10 +946,7 @@ def train_epoch(
 
         wandb.log(log_dict)
 
-        # Track predictions for metrics
-        preds = torch.argmax(logits, dim=-1).cpu().numpy()
-        predictions.extend(preds)
-        labels.extend(batch_labels.cpu().numpy())
+        batch_num += 1
 
     # Safety check for empty dataloader
     if len(data_loader) == 0:
@@ -681,7 +955,18 @@ def train_epoch(
 
     avg_loss = total_loss / len(data_loader)
     metrics = calculate_metrics(predictions, labels)
-    scheduler.step()
+
+    # # Print epoch summary
+    # print(f"\n      Epoch Summary:")
+    # print(f"        Overall prediction distribution: {np.bincount(predictions, minlength=4)}")
+    # print(f"        Overall label distribution:      {np.bincount(labels, minlength=4)}")
+    # print(f"        Accuracy: {metrics['accuracy']:.4f}, UAR: {metrics['uar']:.4f}")
+
+    # Step the scheduler if it's not ReduceLROnPlateau (which needs validation metrics)
+    if scheduler is not None and not isinstance(
+        scheduler, lr_scheduler.ReduceLROnPlateau
+    ):
+        scheduler.step()
 
     return avg_loss, metrics
 
@@ -695,7 +980,7 @@ def evaluate_model_multimodal(
     text_encoder=None,
     return_difficulties=True,
     create_plots=True,
-    plot_title=""
+    plot_title="",
 ):
     """
     Evaluate model on a dataset with support for multimodal inputs
@@ -711,17 +996,17 @@ def evaluate_model_multimodal(
     labels = []
     difficulties = []
 
-    modality = getattr(config, 'modality', 'audio')
-    text_max_length = getattr(config, 'text_max_length', 128)
+    modality = getattr(config, "modality", "audio")
+    text_max_length = getattr(config, "text_max_length", 128)
 
     with torch.no_grad():
         for batch in data_loader:
-            batch_labels = batch['label'].to(device)
+            batch_labels = batch["label"].to(device)
 
             # Forward pass based on modality
             if modality == "audio":
                 # Audio-only mode
-                features = batch['features'].to(device)
+                features = batch["features"].to(device)
                 logits = model(features)
 
             elif modality == "text":
@@ -729,33 +1014,37 @@ def evaluate_model_multimodal(
                 transcripts = batch["transcript"]
 
                 # Tokenize text
-                if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+                if hasattr(model, "text_encoder") and model.text_encoder is not None:
                     input_ids, attention_mask = model.text_encoder.tokenize_batch(
                         transcripts, max_length=text_max_length, device=device
                     )
-                    logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                    logits = model(
+                        text_input_ids=input_ids, text_attention_mask=attention_mask
+                    )
                 elif text_encoder is not None:
                     input_ids, attention_mask = text_encoder.tokenize_batch(
                         transcripts, max_length=text_max_length, device=device
                     )
-                    logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                    logits = model(
+                        text_input_ids=input_ids, text_attention_mask=attention_mask
+                    )
                 else:
                     raise ValueError("Text encoder not available for text-only mode")
 
             elif modality == "both":
                 # Multimodal mode
-                features = batch['features'].to(device)
+                features = batch["features"].to(device)
                 transcripts = batch["transcript"]
 
                 # Tokenize text
-                if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+                if hasattr(model, "text_encoder") and model.text_encoder is not None:
                     input_ids, attention_mask = model.text_encoder.tokenize_batch(
                         transcripts, max_length=text_max_length, device=device
                     )
                     logits = model(
                         audio_features=features,
                         text_input_ids=input_ids,
-                        text_attention_mask=attention_mask
+                        text_attention_mask=attention_mask,
                     )
                 elif text_encoder is not None:
                     input_ids, attention_mask = text_encoder.tokenize_batch(
@@ -764,7 +1053,7 @@ def evaluate_model_multimodal(
                     logits = model(
                         audio_features=features,
                         text_input_ids=input_ids,
-                        text_attention_mask=attention_mask
+                        text_attention_mask=attention_mask,
                     )
                 else:
                     raise ValueError("Text encoder not available for multimodal mode")
@@ -779,7 +1068,7 @@ def evaluate_model_multimodal(
 
             # Collect difficulties if requested
             if return_difficulties:
-                batch_difficulties = batch.get('difficulty', [0.5] * len(batch_labels))
+                batch_difficulties = batch.get("difficulty", [0.5] * len(batch_labels))
                 if torch.is_tensor(batch_difficulties):
                     batch_difficulties = batch_difficulties.cpu().numpy()
                 difficulties.extend(batch_difficulties)
@@ -788,39 +1077,41 @@ def evaluate_model_multimodal(
     metrics = calculate_metrics(predictions, labels)
 
     results = {
-        'loss': avg_loss,
-        'predictions': predictions,
-        'labels': labels,
-        'difficulties': difficulties if return_difficulties else None,
-        **metrics
+        "loss": avg_loss,
+        "predictions": predictions,
+        "labels": labels,
+        "difficulties": difficulties if return_difficulties else None,
+        **metrics,
     }
 
     # Create plots if requested
     if create_plots and plot_title:
         # Confusion matrix
         confusion_matrix_plot = create_confusion_matrix(predictions, labels, plot_title)
-        results['confusion_matrix'] = confusion_matrix_plot
+        results["confusion_matrix"] = confusion_matrix_plot
 
         # Difficulty vs accuracy plot (only if we have difficulties)
         if return_difficulties and len(difficulties) > 0:
             difficulty_plot, difficulty_analysis = create_difficulty_accuracy_plot(
                 predictions, labels, difficulties, plot_title
             )
-            results['difficulty_plot'] = difficulty_plot
-            results['difficulty_analysis'] = difficulty_analysis
+            results["difficulty_plot"] = difficulty_plot
+            results["difficulty_analysis"] = difficulty_analysis
 
     return results
 
 
-def calculate_model_confidences_multimodal(model, dataset, indices, device, config, text_encoder=None):
+def calculate_model_confidences_multimodal(
+    model, dataset, indices, device, config, text_encoder=None
+):
     """Calculate model confidence scores for samples in multimodal setting"""
     model.eval()
     if text_encoder is not None:
         text_encoder.eval()
 
     confidences = []
-    modality = getattr(config, 'modality', 'audio')
-    text_max_length = getattr(config, 'text_max_length', 128)
+    modality = getattr(config, "modality", "audio")
+    text_max_length = getattr(config, "text_max_length", 128)
 
     with torch.no_grad():
         for i in indices:
@@ -833,28 +1124,32 @@ def calculate_model_confidences_multimodal(model, dataset, indices, device, conf
 
             elif modality == "text":
                 transcript = sample["transcript"]
-                if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+                if hasattr(model, "text_encoder") and model.text_encoder is not None:
                     input_ids, attention_mask = model.text_encoder.tokenize_batch(
                         [transcript], max_length=text_max_length, device=device
                     )
-                    logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                    logits = model(
+                        text_input_ids=input_ids, text_attention_mask=attention_mask
+                    )
                 elif text_encoder is not None:
                     input_ids, attention_mask = text_encoder.tokenize_batch(
                         [transcript], max_length=text_max_length, device=device
                     )
-                    logits = model(text_input_ids=input_ids, text_attention_mask=attention_mask)
+                    logits = model(
+                        text_input_ids=input_ids, text_attention_mask=attention_mask
+                    )
 
             elif modality == "both":
                 features = sample["features"].unsqueeze(0).to(device)
                 transcript = sample["transcript"]
-                if hasattr(model, 'text_encoder') and model.text_encoder is not None:
+                if hasattr(model, "text_encoder") and model.text_encoder is not None:
                     input_ids, attention_mask = model.text_encoder.tokenize_batch(
                         [transcript], max_length=text_max_length, device=device
                     )
                     logits = model(
                         audio_features=features,
                         text_input_ids=input_ids,
-                        text_attention_mask=attention_mask
+                        text_attention_mask=attention_mask,
                     )
                 elif text_encoder is not None:
                     input_ids, attention_mask = text_encoder.tokenize_batch(
@@ -863,7 +1158,7 @@ def calculate_model_confidences_multimodal(model, dataset, indices, device, conf
                     logits = model(
                         audio_features=features,
                         text_input_ids=input_ids,
-                        text_attention_mask=attention_mask
+                        text_attention_mask=attention_mask,
                     )
 
             probs = torch.softmax(logits, dim=-1)
@@ -921,7 +1216,7 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
         # Get actual feature dimension from dataset
         sample = train_dataset[0]
-        modality = getattr(config, 'modality', 'audio')
+        modality = getattr(config, "modality", "audio")
 
         if modality in ["audio", "both"]:
             sample_features = sample["features"]
@@ -933,7 +1228,9 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
             # Text-only mode doesn't need audio dim
             actual_input_dim = 768  # Default BERT dimension
 
-        print(f"🔍 Using input_dim: {actual_input_dim} (detected from {train_dataset.dataset_name})")
+        print(
+            f"🔍 Using input_dim: {actual_input_dim} (detected from {train_dataset.dataset_name})"
+        )
 
         # Update config with actual audio dimension
         config.audio_dim = actual_input_dim
@@ -943,13 +1240,19 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
         # Initialize text encoder if needed (external, for backward compatibility)
         text_encoder = None
-        if modality in ["text", "both"] and not hasattr(model, 'text_encoder'):
+        if modality in ["text", "both"] and not hasattr(model, "text_encoder"):
             text_encoder = FrozenBERTEncoder(
-                model_name=getattr(config, 'text_model_name', 'bert-base-uncased')
+                model_name=getattr(config, "text_model_name", "bert-base-uncased")
             ).to(device)
 
+        focal_gamma = getattr(config, "focal_gamma", 2.0)
+        loss_temperature = getattr(config, "loss_temperature", 2000)
         criterion = FocalLossAutoWeights(
-            num_classes=4, gamma=2.0, reduction="none", device=device
+            num_classes=4,
+            gamma=focal_gamma,
+            reduction="none",
+            device=device,
+            temperature=loss_temperature,
         )
 
         optimizer = optim.Adam(
@@ -957,7 +1260,7 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
+        scheduler = create_lr_scheduler(optimizer, config)
 
         # Get curriculum pacing function
         pacing_function = get_curriculum_pacing_function(config.curriculum_pacing)
@@ -970,8 +1273,11 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
             # Increase dropout after curriculum learning ends
             if config.use_curriculum_learning and epoch == config.curriculum_epochs:
-                print(f"   Epoch {epoch+1}: Increasing dropout from {config.dropout} to 0.6")
-                model.set_dropout_rate(0.6)
+                post_dropout = getattr(config, "post_curriculum_dropout", 0.6)
+                print(
+                    f"   Epoch {epoch+1}: Increasing dropout from {config.dropout} to {post_dropout}"
+                )
+                model.set_dropout_rate(post_dropout)
 
             # Create curriculum subset if enabled
             if config.use_curriculum_learning and epoch < config.curriculum_epochs:
@@ -1026,12 +1332,21 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
             )
 
             loso_results = evaluate_model_multimodal(
-                model, loso_loader, criterion, device, config,
-                text_encoder=text_encoder, create_plots=False
+                model,
+                loso_loader,
+                criterion,
+                device,
+                config,
+                text_encoder=text_encoder,
+                create_plots=False,
             )
 
             # Calculate model confidences for next epoch
-            if config.curriculum_type == "model_confidence" and config.use_curriculum_learning and epoch < config.num_epochs - 1:
+            if (
+                config.curriculum_type == "model_confidence"
+                and config.use_curriculum_learning
+                and epoch < config.num_epochs - 1
+            ):
                 print(f"   Calculating model confidences for epoch {epoch + 2}...")
                 model_confidences = calculate_model_confidences_multimodal(
                     model, train_dataset, train_indices, device, config, text_encoder
@@ -1040,6 +1355,13 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
             if loso_results["uar"] > best_loso_acc:
                 best_loso_acc = loso_results["accuracy"]
                 best_model_state = model.state_dict().copy()
+
+            # Update learning rate scheduler
+            if scheduler is not None:
+                if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(loso_results["uar"])  # Needs validation metric
+                else:
+                    scheduler.step()  # Standard schedulers
 
         # Load best model and evaluate with plots
         model.load_state_dict(best_model_state)
@@ -1167,7 +1489,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
 
     # Get actual feature dimension from dataset
     sample = train_dataset[0]
-    modality = getattr(config, 'modality', 'audio')
+    modality = getattr(config, "modality", "audio")
 
     if modality in ["audio", "both"]:
         sample_features = sample["features"]
@@ -1191,9 +1513,9 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
 
     # Initialize text encoder if needed (external, for backward compatibility)
     text_encoder = None
-    if modality in ["text", "both"] and not hasattr(model, 'text_encoder'):
+    if modality in ["text", "both"] and not hasattr(model, "text_encoder"):
         text_encoder = FrozenBERTEncoder(
-            model_name=getattr(config, 'text_model_name', 'bert-base-uncased')
+            model_name=getattr(config, "text_model_name", "bert-base-uncased")
         ).to(device)
 
     # Calculate class weights
@@ -1216,16 +1538,17 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
             if class_difficulties[i]
             else 1.0
         )
-        class_weights.append(freq_weight + 0.75*avg_difficulty)
+        class_weights.append(freq_weight + 0.75 * avg_difficulty)
         freq_weights.append(freq_weight + 1)
-        print("########### LABEL {i} ###############")
-        print(f"freq_weight: {freq_weight} ----   avg_difficulty: {avg_difficulty}")
+        print(f"########### LABEL {i} ###############")
+        print(
+            f"  freq_weight: {freq_weight:.4f} ----   avg_difficulty: {avg_difficulty:.4f}"
+        )
+        print(f"  class_count: {class_counts[i]} ({class_counts[i]/total_samples:.2%})")
 
     # Normalize weights
     total_weight = sum(class_weights)
-    class_weights = [
-        w / total_weight * 4 for w in class_weights
-    ]
+    class_weights = [w / total_weight * 4 for w in class_weights]
 
     class_weights = torch.tensor(class_weights).to(device)
 
@@ -1240,21 +1563,42 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     optimizer = optim.Adam(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
+    scheduler = create_lr_scheduler(optimizer, config)
 
     # Get curriculum pacing function
     pacing_function = get_curriculum_pacing_function(config.curriculum_pacing)
 
+    # Early stopping setup
+    use_early_stopping = getattr(config, "use_early_stopping", False)
+    if use_early_stopping:
+        # Start early stopping only after curriculum learning completes
+        curriculum_epochs = (
+            config.curriculum_epochs if config.use_curriculum_learning else 0
+        )
+        early_stopping = EarlyStopping(
+            patience=getattr(config, "early_stopping_patience", 10),
+            min_delta=getattr(config, "early_stopping_min_delta", 0.001),
+            mode="max",  # Maximize UAR
+            start_epoch=curriculum_epochs,
+        )
+        print(
+            f"📉 Early stopping enabled (patience={early_stopping.patience}, starting after epoch {curriculum_epochs})"
+        )
+
     # Training loop with curriculum learning
     best_val_acc = 0
+    best_val_uar = 0
     model_confidences = None
 
     for epoch in range(config.num_epochs):
 
         # Increase dropout after curriculum learning ends
         if epoch == config.curriculum_epochs:
-            print(f"   Epoch {epoch+1}: Increasing dropout from {config.dropout} to 0.6")
-            model.set_dropout_rate(0.6)
+            post_dropout = getattr(config, "post_curriculum_dropout", 0.6)
+            print(
+                f"   Epoch {epoch+1}: Increasing dropout from {config.dropout} to {post_dropout}"
+            )
+            model.set_dropout_rate(post_dropout)
 
         # Create curriculum subset if enabled
         if config.use_curriculum_learning and epoch < config.curriculum_epochs:
@@ -1308,12 +1652,21 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
         )
 
         val_results = evaluate_model_multimodal(
-            model, val_loader, criterion, device, config,
-            text_encoder=text_encoder, create_plots=False
+            model,
+            val_loader,
+            criterion,
+            device,
+            config,
+            text_encoder=text_encoder,
+            create_plots=False,
         )
 
         # Calculate model confidences for next epoch
-        if config.curriculum_type == "model_confidence" and config.use_curriculum_learning and epoch < config.num_epochs - 1:
+        if (
+            config.curriculum_type == "model_confidence"
+            and config.use_curriculum_learning
+            and epoch < config.num_epochs - 1
+        ):
             print(f"   Calculating model confidences for epoch {epoch + 2}...")
             model_confidences = calculate_model_confidences_multimodal(
                 model, train_dataset, train_indices, device, config, text_encoder
@@ -1332,9 +1685,24 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
             best_val_acc = val_results["accuracy"]
             best_model_state = model.state_dict().copy()
 
+        if val_results["uar"] > best_val_uar:
+            best_val_uar = val_results["uar"]
+
         print(
-            f"   Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_results['accuracy']:.4f}"
+            f"   Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_results['accuracy']:.4f}, Val UAR={val_results['uar']:.4f}"
         )
+
+        # Step metric-based scheduler (ReduceLROnPlateau) after validation
+        if scheduler is not None and isinstance(
+            scheduler, lr_scheduler.ReduceLROnPlateau
+        ):
+            scheduler.step(val_results["uar"])
+
+        # Check early stopping
+        if use_early_stopping:
+            if early_stopping(val_results["uar"], epoch):
+                print(f"   🛑 Stopping training at epoch {epoch+1}")
+                break
 
     # Load best model and evaluate on test sets with plots
     model.load_state_dict(best_model_state)
@@ -1419,7 +1787,7 @@ def run_experiment_with_seeds(config):
     Run experiment with multiple seeds and compute averaged results
     Creates WandB runs for each seed and a final averaged section
     """
-    seeds = getattr(config, 'seeds', [42])
+    seeds = getattr(config, "seeds", [42])
 
     if len(seeds) == 1:
         # Single seed - run normally
@@ -1470,19 +1838,19 @@ def compute_averaged_results(all_results, config):
 
     if config.evaluation_mode == "cross_corpus":
         # Extract validation metrics
-        val_accs = [r['validation']['accuracy'] for r in all_results]
-        val_uars = [r['validation']['uar'] for r in all_results]
+        val_accs = [r["validation"]["accuracy"] for r in all_results]
+        val_uars = [r["validation"]["uar"] for r in all_results]
 
-        averaged['validation'] = {
-            'accuracy_mean': np.mean(val_accs),
-            'accuracy_std': np.std(val_accs),
-            'uar_mean': np.mean(val_uars),
-            'uar_std': np.std(val_uars),
+        averaged["validation"] = {
+            "accuracy_mean": np.mean(val_accs),
+            "accuracy_std": np.std(val_accs),
+            "uar_mean": np.mean(val_uars),
+            "uar_std": np.std(val_uars),
         }
 
         # Extract test results for each dataset
-        test_datasets = [tr['dataset'] for tr in all_results[0]['test_results']]
-        averaged['test_results'] = []
+        test_datasets = [tr["dataset"] for tr in all_results[0]["test_results"]]
+        averaged["test_results"] = []
 
         for dataset_name in test_datasets:
             # Collect metrics for this dataset across all seeds
@@ -1491,105 +1859,124 @@ def compute_averaged_results(all_results, config):
             f1s = []
 
             for result in all_results:
-                for test_result in result['test_results']:
-                    if test_result['dataset'] == dataset_name:
-                        accs.append(test_result['results']['accuracy'])
-                        uars.append(test_result['results']['uar'])
-                        f1s.append(test_result['results']['f1_weighted'])
+                for test_result in result["test_results"]:
+                    if test_result["dataset"] == dataset_name:
+                        accs.append(test_result["results"]["accuracy"])
+                        uars.append(test_result["results"]["uar"])
+                        f1s.append(test_result["results"]["f1_weighted"])
                         break
 
-            averaged['test_results'].append({
-                'dataset': dataset_name,
-                'accuracy_mean': np.mean(accs),
-                'accuracy_std': np.std(accs),
-                'uar_mean': np.mean(uars),
-                'uar_std': np.std(uars),
-                'f1_mean': np.mean(f1s),
-                'f1_std': np.std(f1s),
-            })
+            averaged["test_results"].append(
+                {
+                    "dataset": dataset_name,
+                    "accuracy_mean": np.mean(accs),
+                    "accuracy_std": np.std(accs),
+                    "uar_mean": np.mean(uars),
+                    "uar_std": np.std(uars),
+                    "f1_mean": np.mean(f1s),
+                    "f1_std": np.std(f1s),
+                }
+            )
 
     elif config.evaluation_mode == "loso":
         # Extract LOSO metrics
-        loso_acc_means = [r['loso_accuracy_mean'] for r in all_results]
-        loso_acc_stds = [r['loso_accuracy_std'] for r in all_results]
-        loso_uar_means = [r['loso_uar_mean'] for r in all_results]
-        loso_uar_stds = [r['loso_uar_std'] for r in all_results]
+        loso_acc_means = [r["loso_accuracy_mean"] for r in all_results]
+        loso_acc_stds = [r["loso_accuracy_std"] for r in all_results]
+        loso_uar_means = [r["loso_uar_mean"] for r in all_results]
+        loso_uar_stds = [r["loso_uar_std"] for r in all_results]
 
-        averaged['loso'] = {
-            'accuracy_mean': np.mean(loso_acc_means),
-            'accuracy_std_across_seeds': np.std(loso_acc_means),
-            'accuracy_std_within_seeds': np.mean(loso_acc_stds),
-            'uar_mean': np.mean(loso_uar_means),
-            'uar_std_across_seeds': np.std(loso_uar_means),
-            'uar_std_within_seeds': np.mean(loso_uar_stds),
+        averaged["loso"] = {
+            "accuracy_mean": np.mean(loso_acc_means),
+            "accuracy_std_across_seeds": np.std(loso_acc_means),
+            "accuracy_std_within_seeds": np.mean(loso_acc_stds),
+            "uar_mean": np.mean(loso_uar_means),
+            "uar_std_across_seeds": np.std(loso_uar_means),
+            "uar_std_within_seeds": np.mean(loso_uar_stds),
         }
 
     elif config.evaluation_mode == "both":
         # Handle both evaluation modes
         # LOSO
-        loso_acc_means = [r['loso']['loso_accuracy_mean'] for r in all_results]
-        loso_uar_means = [r['loso']['loso_uar_mean'] for r in all_results]
+        loso_acc_means = [r["loso"]["loso_accuracy_mean"] for r in all_results]
+        loso_uar_means = [r["loso"]["loso_uar_mean"] for r in all_results]
 
-        averaged['loso'] = {
-            'accuracy_mean': np.mean(loso_acc_means),
-            'accuracy_std': np.std(loso_acc_means),
-            'uar_mean': np.mean(loso_uar_means),
-            'uar_std': np.std(loso_uar_means),
+        averaged["loso"] = {
+            "accuracy_mean": np.mean(loso_acc_means),
+            "accuracy_std": np.std(loso_acc_means),
+            "uar_mean": np.mean(loso_uar_means),
+            "uar_std": np.std(loso_uar_means),
         }
 
         # Cross-corpus
-        val_accs = [r['cross_corpus']['validation']['accuracy'] for r in all_results]
-        val_uars = [r['cross_corpus']['validation']['uar'] for r in all_results]
+        val_accs = [r["cross_corpus"]["validation"]["accuracy"] for r in all_results]
+        val_uars = [r["cross_corpus"]["validation"]["uar"] for r in all_results]
 
-        averaged['cross_corpus'] = {
-            'validation': {
-                'accuracy_mean': np.mean(val_accs),
-                'accuracy_std': np.std(val_accs),
-                'uar_mean': np.mean(val_uars),
-                'uar_std': np.std(val_uars),
+        averaged["cross_corpus"] = {
+            "validation": {
+                "accuracy_mean": np.mean(val_accs),
+                "accuracy_std": np.std(val_accs),
+                "uar_mean": np.mean(val_uars),
+                "uar_std": np.std(val_uars),
             },
-            'test_results': []
+            "test_results": [],
         }
 
         # Test results
-        test_datasets = [tr['dataset'] for tr in all_results[0]['cross_corpus']['test_results']]
+        test_datasets = [
+            tr["dataset"] for tr in all_results[0]["cross_corpus"]["test_results"]
+        ]
         for dataset_name in test_datasets:
             accs = []
             uars = []
 
             for result in all_results:
-                for test_result in result['cross_corpus']['test_results']:
-                    if test_result['dataset'] == dataset_name:
-                        accs.append(test_result['results']['accuracy'])
-                        uars.append(test_result['results']['uar'])
+                for test_result in result["cross_corpus"]["test_results"]:
+                    if test_result["dataset"] == dataset_name:
+                        accs.append(test_result["results"]["accuracy"])
+                        uars.append(test_result["results"]["uar"])
                         break
 
-            averaged['cross_corpus']['test_results'].append({
-                'dataset': dataset_name,
-                'accuracy_mean': np.mean(accs),
-                'accuracy_std': np.std(accs),
-                'uar_mean': np.mean(uars),
-                'uar_std': np.std(uars),
-            })
+            averaged["cross_corpus"]["test_results"].append(
+                {
+                    "dataset": dataset_name,
+                    "accuracy_mean": np.mean(accs),
+                    "accuracy_std": np.std(accs),
+                    "uar_mean": np.mean(uars),
+                    "uar_std": np.std(uars),
+                }
+            )
 
     return averaged
+
+
+def get_train_dataset_name(config):
+    """
+    Get a clean train dataset name for logging, handling both single and multiple datasets
+    """
+    if isinstance(config.train_dataset, list):
+        return "+".join(config.train_dataset)
+    else:
+        return config.train_dataset
 
 
 def log_averaged_results_to_wandb(averaged_results, config, experiment_name, seeds):
     """
     Log averaged results to WandB in special averaged sections
     """
+    # Get train dataset name (handles both single and multiple datasets)
+    train_dataset_name = get_train_dataset_name(config)
+
     # Create a new WandB run for averaged results
     wandb.init(
         project=config.wandb_project,
-        name=f"{experiment_name}_AVERAGED",
+        name=f"{experiment_name}_AVERAGED_",
         config={
             **vars(config),
-            'seeds': seeds,
-            'num_seeds': len(seeds),
-            'averaged_run': True
+            "seeds": seeds,
+            "num_seeds": len(seeds),
+            "averaged_run": True,
         },
-        tags=["averaged", "multi-seed"]
+        tags=["averaged", "multi-seed"],
     )
 
     print(f"\n{'='*60}")
@@ -1598,88 +1985,132 @@ def log_averaged_results_to_wandb(averaged_results, config, experiment_name, see
 
     if config.evaluation_mode == "cross_corpus":
         # Log validation averages
-        val = averaged_results['validation']
+        val = averaged_results["validation"]
         print(f"\nValidation:")
         print(f"  Accuracy: {val['accuracy_mean']:.4f} ± {val['accuracy_std']:.4f}")
         print(f"  UAR: {val['uar_mean']:.4f} ± {val['uar_std']:.4f}")
 
-        wandb.log({
-            "AVERAGED/validation_accuracy_mean": val['accuracy_mean'],
-            "AVERAGED/validation_accuracy_std": val['accuracy_std'],
-            "AVERAGED/validation_uar_mean": val['uar_mean'],
-            "AVERAGED/validation_uar_std": val['uar_std'],
-        })
+        wandb.log(
+            {
+                f"AVERAGED_{train_dataset_name}/validation_accuracy_mean": val[
+                    "accuracy_mean"
+                ],
+                f"AVERAGED_{train_dataset_name}/validation_accuracy_std": val[
+                    "accuracy_std"
+                ],
+                f"AVERAGED_{train_dataset_name}/validation_uar_mean": val["uar_mean"],
+                f"AVERAGED_{train_dataset_name}/validation_uar_std": val["uar_std"],
+            }
+        )
 
         # Log test averages for each dataset
-        for test_result in averaged_results['test_results']:
-            dataset_name = test_result['dataset']
-            print(f"\n{config.train_dataset} → {dataset_name}:")
-            print(f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}")
-            print(f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}")
+        for test_result in averaged_results["test_results"]:
+            dataset_name = test_result["dataset"]
+            print(f"\n{train_dataset_name} → {dataset_name}:")
+            print(
+                f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}"
+            )
+            print(
+                f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}"
+            )
 
-            prefix = f"AVERAGED/{config.train_dataset}to{dataset_name}"
-            wandb.log({
-                f"{prefix}_accuracy_mean": test_result['accuracy_mean'],
-                f"{prefix}_accuracy_std": test_result['accuracy_std'],
-                f"{prefix}_uar_mean": test_result['uar_mean'],
-                f"{prefix}_uar_std": test_result['uar_std'],
-                f"{prefix}_f1_mean": test_result['f1_mean'],
-                f"{prefix}_f1_std": test_result['f1_std'],
-            })
+            prefix = (
+                f"AVERAGED_{train_dataset_name}/{train_dataset_name}to{dataset_name}"
+            )
+            wandb.log(
+                {
+                    f"{prefix}_accuracy_mean": test_result["accuracy_mean"],
+                    f"{prefix}_accuracy_std": test_result["accuracy_std"],
+                    f"{prefix}_uar_mean": test_result["uar_mean"],
+                    f"{prefix}_uar_std": test_result["uar_std"],
+                    f"{prefix}_f1_mean": test_result["f1_mean"],
+                    f"{prefix}_f1_std": test_result["f1_std"],
+                }
+            )
 
     elif config.evaluation_mode == "loso":
-        loso = averaged_results['loso']
+        loso = averaged_results["loso"]
         print(f"\nLOSO:")
-        print(f"  Accuracy: {loso['accuracy_mean']:.4f} ± {loso['accuracy_std_across_seeds']:.4f}")
+        print(
+            f"  Accuracy: {loso['accuracy_mean']:.4f} ± {loso['accuracy_std_across_seeds']:.4f}"
+        )
         print(f"  UAR: {loso['uar_mean']:.4f} ± {loso['uar_std_across_seeds']:.4f}")
 
-        wandb.log({
-            "AVERAGED/loso_accuracy_mean": loso['accuracy_mean'],
-            "AVERAGED/loso_accuracy_std": loso['accuracy_std_across_seeds'],
-            "AVERAGED/loso_uar_mean": loso['uar_mean'],
-            "AVERAGED/loso_uar_std": loso['uar_std_across_seeds'],
-        })
+        wandb.log(
+            {
+                f"AVERAGED_{train_dataset_name}/loso_accuracy_mean": loso[
+                    "accuracy_mean"
+                ],
+                f"AVERAGED_{train_dataset_name}/loso_accuracy_std": loso[
+                    "accuracy_std_across_seeds"
+                ],
+                f"AVERAGED_{train_dataset_name}/loso_uar_mean": loso["uar_mean"],
+                f"AVERAGED_{train_dataset_name}/loso_uar_std": loso[
+                    "uar_std_across_seeds"
+                ],
+            }
+        )
 
     elif config.evaluation_mode == "both":
         # LOSO
-        loso = averaged_results['loso']
+        loso = averaged_results["loso"]
         print(f"\nLOSO:")
         print(f"  Accuracy: {loso['accuracy_mean']:.4f} ± {loso['accuracy_std']:.4f}")
         print(f"  UAR: {loso['uar_mean']:.4f} ± {loso['uar_std']:.4f}")
 
-        wandb.log({
-            "AVERAGED/loso_accuracy_mean": loso['accuracy_mean'],
-            "AVERAGED/loso_accuracy_std": loso['accuracy_std'],
-            "AVERAGED/loso_uar_mean": loso['uar_mean'],
-            "AVERAGED/loso_uar_std": loso['uar_std'],
-        })
+        wandb.log(
+            {
+                f"AVERAGED_{train_dataset_name}/loso_accuracy_mean": loso[
+                    "accuracy_mean"
+                ],
+                f"AVERAGED_{train_dataset_name}/loso_accuracy_std": loso[
+                    "accuracy_std"
+                ],
+                f"AVERAGED_{train_dataset_name}/loso_uar_mean": loso["uar_mean"],
+                f"AVERAGED_{train_dataset_name}/loso_uar_std": loso["uar_std"],
+            }
+        )
 
         # Cross-corpus
-        val = averaged_results['cross_corpus']['validation']
+        val = averaged_results["cross_corpus"]["validation"]
         print(f"\nValidation:")
         print(f"  Accuracy: {val['accuracy_mean']:.4f} ± {val['accuracy_std']:.4f}")
         print(f"  UAR: {val['uar_mean']:.4f} ± {val['uar_std']:.4f}")
 
-        wandb.log({
-            "AVERAGED/validation_accuracy_mean": val['accuracy_mean'],
-            "AVERAGED/validation_accuracy_std": val['accuracy_std'],
-            "AVERAGED/validation_uar_mean": val['uar_mean'],
-            "AVERAGED/validation_uar_std": val['uar_std'],
-        })
+        wandb.log(
+            {
+                f"AVERAGED_{train_dataset_name}/validation_accuracy_mean": val[
+                    "accuracy_mean"
+                ],
+                f"AVERAGED_{train_dataset_name}/validation_accuracy_std": val[
+                    "accuracy_std"
+                ],
+                f"AVERAGED_{train_dataset_name}/validation_uar_mean": val["uar_mean"],
+                f"AVERAGED_{train_dataset_name}/validation_uar_std": val["uar_std"],
+            }
+        )
 
-        for test_result in averaged_results['cross_corpus']['test_results']:
-            dataset_name = test_result['dataset']
-            print(f"\n{config.train_dataset} → {dataset_name}:")
-            print(f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}")
-            print(f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}")
+        for test_result in averaged_results["cross_corpus"]["test_results"]:
+            dataset_name = test_result["dataset"]
+            print(f"\n{train_dataset_name} → {dataset_name}:")
+            print(
+                f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}"
+            )
+            print(
+                f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}"
+            )
 
-            prefix = f"AVERAGED/{config.train_dataset}to{dataset_name}"
-            wandb.log({
-                f"{prefix}_accuracy_mean": test_result['accuracy_mean'],
-                f"{prefix}_accuracy_std": test_result['accuracy_std'],
-                f"{prefix}_uar_mean": test_result['uar_mean'],
-                f"{prefix}_uar_std": test_result['uar_std'],
-            })
+            prefix = (
+                f"AVERAGED_{train_dataset_name}/{train_dataset_name}to{dataset_name}"
+            )
+            wandb.log(
+                {
+                    f"{prefix}_accuracy_mean": test_result["accuracy_mean"],
+                    f"{prefix}_accuracy_std": test_result["accuracy_std"],
+                    f"{prefix}_uar_mean": test_result["uar_mean"],
+                    f"{prefix}_uar_std": test_result["uar_std"],
+                }
+            )
 
     print(f"{'='*60}\n")
     wandb.finish()

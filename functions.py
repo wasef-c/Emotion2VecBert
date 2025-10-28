@@ -467,12 +467,13 @@ def get_session_splits(dataset, dataset_name):
 
 
 class FocalLossAutoWeights(nn.Module):
-    def __init__(self, num_classes, gamma=2.0, reduction='none', device='cpu'):
+    def __init__(self, num_classes, gamma=2.0, reduction='none', device='cpu', temperature=2000):
         super().__init__()
         self.num_classes = num_classes
         self.gamma = gamma
         self.reduction = reduction
         self.device = device
+        self.temperature = temperature
 
     def forward(self, logits, targets):
         """
@@ -494,11 +495,10 @@ class FocalLossAutoWeights(nn.Module):
 
 
             class_weights = class_weights.to(self.device)
-            
 
-        # Compute log softmax
-        temperature = 2000 # tune this, bigger means softer probs
-        scaled_logits = logits / temperature
+
+        # Compute log softmax with configurable temperature
+        scaled_logits = logits / self.temperature
 
         log_probs = F.log_softmax(scaled_logits, dim=-1)  # [B, C]
         probs = torch.exp(log_probs)  # [B, C]
@@ -592,31 +592,45 @@ class SpeakerGroupedDataLoader:
         """Iterate through speaker-grouped batches"""
         for batch_indices in self.sampler:
             batch = {
-                'features': [],
                 'label': [],
                 'speaker_id': [],
                 'session': [],
                 'dataset': [],
                 'difficulty': []
             }
-            
+
+            # Check first item to see what fields are available
+            first_item = self.dataset[batch_indices[0]]
+            has_features = 'features' in first_item and first_item['features'] is not None
+            has_transcript = 'transcript' in first_item and first_item['transcript'] is not None
+
+            if has_features:
+                batch['features'] = []
+            if has_transcript:
+                batch['transcript'] = []
+
             for idx in batch_indices:
                 item = self.dataset[idx]
-                
-                batch['features'].append(item['features'])
+
+                if has_features:
+                    batch['features'].append(item['features'])
+                if has_transcript:
+                    batch['transcript'].append(item['transcript'])
+
                 batch['label'].append(item['label'])
                 batch['speaker_id'].append(item['speaker_id'])
                 batch['session'].append(item['session'])
                 batch['dataset'].append(item['dataset'])
                 batch['difficulty'].append(item['difficulty'])
-            
+
             # Stack tensors
-            batch['features'] = torch.stack(batch['features'])
+            if has_features:
+                batch['features'] = torch.stack(batch['features'])
             batch['label'] = torch.stack(batch['label'])
             batch['speaker_id'] = torch.tensor(batch['speaker_id'])
             batch['session'] = torch.tensor(batch['session'])
             batch['difficulty'] = torch.tensor(batch['difficulty'], dtype=torch.float32)
-            
+
             yield batch
     
     def __len__(self):

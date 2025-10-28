@@ -65,9 +65,11 @@ The system works with HuggingFace datasets that include:
 - Additional metadata: VAD values, speaker IDs, etc.
 
 Supported datasets:
-- IEMO (`cairocode/IEMO_Emotion2Vec`)
-- MSPI (`cairocode/MSPI_Emotion2Vec`)
-- MSPP (`cairocode/MSPP_Emotion2Vec_V3`)
+- IEMO (`cairocode/IEMO_Emotion2Vec_Text`)
+- MSPI (`cairocode/MSPI_Emotion2Vec_Text`)
+- MSPP (`cairocode/MSPP_Emotion2Vec_Text`)
+- CMU-MOSEI (`cairocode/CMU_MOSEI_EMOTION2VEC_4class_2`)
+- SAMSEMO (`cairocode/samsemo_emotion2vec_4_V2`)
 
 ## Usage
 
@@ -165,6 +167,11 @@ use_speaker_disentanglement: true
 ```yaml
 evaluation_mode: "cross_corpus"  # "loso", "cross_corpus", or "both"
 train_dataset: "IEMO"  # "IEMO", "MSPI", or "MSPP"
+
+# Cross-corpus mode automatically tests on:
+# - MSPI, MSPP, CMUMOSEI, SAMSEMO (when training on IEMO)
+# - IEMO, MSPP, CMUMOSEI, SAMSEMO (when training on MSPI)
+# - IEMO, MSPI, CMUMOSEI, SAMSEMO (when training on MSPP)
 ```
 
 ## Key Features

@@ -2,7 +2,6 @@
 # Based on the optimal template from ablation_with_speaker2.yaml
 # Uses audio + text with cross-attention fusion
 
-wandb_project: "Multimodal_Emotion_IEMO"
 
 # Base template for multimodal experiments
 template_config: &template
@@ -51,8 +50,15 @@ template_config: &template
   difficulty_method: "euclidean_distance"
 
   # Advanced features (from optimal config)
-  use_difficulty_scaling: true
+  use_difficulty_scaling: false
   use_speaker_disentanglement: true
+
+  # Loss function settings (works well for audio-only)
+  loss_temperature: 2000  # High temperature for audio-only
+  focal_gamma: 2.0
+  post_curriculum_dropout: 0.6  # Dropout after curriculum for audio-only
+
+  wandb_project: "Multimodal_Fusing_Emotion_IEMO"
 
   # Expected VAD values for difficulty calculation
   expected_vad:
@@ -66,21 +72,39 @@ experiments:
     name: "Multimodal Full System IEMO"
     modality: "both"
     fusion_type: "cross_attention"
+    # Lower dropout and disable difficulty scaling for fusion models
+    dropout: 0.2
+    loss_temperature: 1.0
+    post_curriculum_dropout: 0.2
+    use_difficulty_scaling: false
 
   - <<: *template
     name: "Audio Only Baseline IEMO"
     modality: "audio"
+    # Keep audio-only settings (works well)
 
   - <<: *template
     name: "Text Only Baseline IEMO"
     modality: "text"
+    # Lower dropout for text-only
+    dropout: 0.2
+    loss_temperature: 1.0
+    post_curriculum_dropout: 0.2
 
   - <<: *template
     name: "Multimodal Concat Fusion IEMO"
     modality: "both"
     fusion_type: "concat"
+    # Lower dropout for fusion models
+    dropout: 0.2
+    loss_temperature: 1.0
+    post_curriculum_dropout: 0.2
 
   - <<: *template
     name: "Multimodal Gated Fusion IEMO"
     modality: "both"
     fusion_type: "gated"
+    # Lower dropout for fusion models
+    dropout: 0.2
+    loss_temperature: 1.0
+    post_curriculum_dropout: 0.2
