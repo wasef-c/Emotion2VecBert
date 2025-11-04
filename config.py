@@ -19,9 +19,17 @@ class Config:
 
         # Multimodal settings
         self.modality = "both"  # "audio", "text", or "both"
-        self.audio_dim = 768  # emotion2vec feature dimension
-        self.text_model_name = "bert-base-uncased"  # BERT model for text
-        self.freeze_text_encoder = True  # Keep BERT frozen
+
+        # Audio encoder settings
+        self.audio_encoder_type = "preextracted"  # "wav2vec2", "hubert", "emotion2vec", "preextracted"
+        self.audio_model_name = None  # e.g., "facebook/wav2vec2-base-960h", None uses default
+        self.audio_dim = 768  # feature dimension (emotion2vec default)
+        self.freeze_audio_encoder = True  # Keep audio encoder frozen
+        self.audio_pooling = "mean"  # "mean", "first", "last", "max" - pooling for sequence features
+
+        # Text encoder settings
+        self.text_model_name = "bert-base-uncased"  # BERT/RoBERTa model for text
+        self.freeze_text_encoder = True  # Keep text encoder frozen
         self.text_max_length = 128  # Maximum text sequence length
 
         # Fusion settings (only used when modality="both")

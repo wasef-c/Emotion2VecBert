@@ -104,6 +104,7 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
         "use_difficulty_scaling",
         "use_speaker_disentanglement",
         "freeze_text_encoder",
+        "freeze_audio_encoder",
         "use_early_stopping",
     ]
     string_params = [
@@ -113,6 +114,9 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
         "difficulty_method",
         "curriculum_pacing",
         "modality",
+        "audio_encoder_type",
+        "audio_model_name",
+        "audio_pooling",
         "text_model_name",
         "fusion_type",
         "lr_scheduler",

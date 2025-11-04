@@ -1,0 +1,110 @@
+# Hyperparameter Grid Search Configuration
+# Systematic search for optimal training parameters
+# Baseline: Cross-Attention 1024 on IEMO
+
+template_config: &template
+  # Fixed settings (best from ablation)
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16
+  train_dataset: "IEMO"
+  evaluation_mode: "cross_corpus"
+
+  # Model settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 512
+  hidden_dim: 1024
+  num_classes: 4
+  lr_scheduler_T_max: 60
+
+  # Default training settings (will be varied)
+  num_epochs: 30
+  batch_size: 64
+  learning_rate: 1e-5
+  weight_decay: 1e-3
+  dropout: 0.1
+
+  # Curriculum settings
+  use_curriculum_learning: true
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+
+  post_curriculum_dropout: 0.2
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+  wandb_project: "COMPONENT ANALYSIS FUSION"
+  seeds: [42, 456, 32, 908]
+
+experiments:
+#        self.curriculum_type = "difficulty"  # "difficulty", "class_balance", "inverse_difficulty", "model_confidence", "random", "none", "preset_order"
+
+  - <<: *template
+    name: "Concat"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    fusion_type: "concat"
+
+  - <<: *template
+    name: "Roberta"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    text_model_name: "roberta-large"
+
+  - <<: *template
+    name: "Spkr Only"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_difficulty_scaling: false
+
+  - <<: *template
+    name: "Scaling Only"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: false
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: true
+
+  - <<: *template
+    name: "Curriculum Only"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: false
+
+  - <<: *template
+    name: "spkr+scaling"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_speaker_disentanglement: true
+    use_difficulty_scaling: false
+
+
+  - <<: *template
+    name: "curr+scaling"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: true
+
+  - <<: *template
+    name: "curr+spkr"
+    train_dataset: ["IEMO", "MSPI", "MSPP"]
+    use_curriculum_learning: true
+    use_speaker_disentanglement: true
+    use_difficulty_scaling: false

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from text_encoder import FrozenBERTEncoder
 from fusion import get_fusion_module
+from audio_encoder import AudioEncoder
 
 
 class MultimodalEmotionClassifier(nn.Module):
@@ -30,7 +31,11 @@ class MultimodalEmotionClassifier(nn.Module):
         fusion_type="cross_attention",  # "cross_attention", "concat", "gated", "adaptive"
         fusion_hidden_dim=512,
         num_attention_heads=8,
-        freeze_text_encoder=True
+        freeze_text_encoder=True,
+        audio_encoder_type="preextracted",  # "wav2vec2", "hubert", "emotion2vec", "preextracted"
+        audio_model_name=None,
+        freeze_audio_encoder=True,
+        audio_pooling="mean"
     ):
         super().__init__()
 
@@ -41,6 +46,22 @@ class MultimodalEmotionClassifier(nn.Module):
         self.modality = modality
         self.fusion_type = fusion_type
         self.freeze_text_encoder = freeze_text_encoder
+        self.audio_encoder_type = audio_encoder_type
+        self.freeze_audio_encoder = freeze_audio_encoder
+
+        # Initialize audio encoder if needed
+        if modality in ["audio", "both"]:
+            self.audio_encoder = AudioEncoder(
+                encoder_type=audio_encoder_type,
+                model_name=audio_model_name,
+                output_dim=audio_dim,
+                freeze=freeze_audio_encoder,
+                pooling=audio_pooling
+            )
+            # Update audio_dim from encoder if it's different
+            self.audio_dim = self.audio_encoder.get_output_dim()
+        else:
+            self.audio_encoder = None
 
         # Initialize text encoder if needed
         if modality in ["text", "both"]:
@@ -154,9 +175,13 @@ class MultimodalEmotionClassifier(nn.Module):
         if audio_features is None:
             raise ValueError("audio_features required for audio-only mode")
 
-        # Handle sequence inputs (pool if needed)
-        if len(audio_features.shape) == 3:
-            audio_features = audio_features.mean(dim=1)  # [batch_size, audio_dim]
+        # Process through audio encoder if not preextracted
+        if self.audio_encoder is not None:
+            audio_features = self.audio_encoder(audio_features)
+        else:
+            # Handle sequence inputs (pool if needed) for backward compatibility
+            if len(audio_features.shape) == 3:
+                audio_features = audio_features.mean(dim=1)  # [batch_size, audio_dim]
 
         logits = self.classifier(audio_features)
         return logits
@@ -180,9 +205,13 @@ class MultimodalEmotionClassifier(nn.Module):
         if text_input_ids is None or text_attention_mask is None:
             raise ValueError("text inputs required for multimodal mode")
 
-        # Handle sequence audio inputs (pool if needed)
-        if len(audio_features.shape) == 3:
-            audio_features = audio_features.mean(dim=1)  # [batch_size, audio_dim]
+        # Process through audio encoder if not preextracted
+        if self.audio_encoder is not None:
+            audio_features = self.audio_encoder(audio_features)
+        else:
+            # Handle sequence audio inputs (pool if needed) for backward compatibility
+            if len(audio_features.shape) == 3:
+                audio_features = audio_features.mean(dim=1)  # [batch_size, audio_dim]
 
         # Extract text features
         text_features = self.text_encoder(text_input_ids, text_attention_mask)
@@ -266,7 +295,11 @@ def create_model(config):
             fusion_type=getattr(config, 'fusion_type', 'cross_attention'),
             fusion_hidden_dim=getattr(config, 'fusion_hidden_dim', 512),
             num_attention_heads=getattr(config, 'num_attention_heads', 8),
-            freeze_text_encoder=getattr(config, 'freeze_text_encoder', True)
+            freeze_text_encoder=getattr(config, 'freeze_text_encoder', True),
+            audio_encoder_type=getattr(config, 'audio_encoder_type', 'preextracted'),
+            audio_model_name=getattr(config, 'audio_model_name', None),
+            freeze_audio_encoder=getattr(config, 'freeze_audio_encoder', True),
+            audio_pooling=getattr(config, 'audio_pooling', 'mean')
         )
 
     return model

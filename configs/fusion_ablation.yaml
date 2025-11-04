@@ -5,12 +5,24 @@ wandb_project: "MultiModel_FusionAblation"
 
 template_config: &template
   # Training hyperparameters (optimal)
-  learning_rate: 1e-5
+  # learning_rate: 1e-5
   weight_decay: 5e-6
   num_epochs: 30
   batch_size: 64
-  dropout: 0.1
+  # dropout: 0.1
 
+  # Lower dropout and disable difficulty scaling for fusion models
+  dropout: 0.2
+  loss_temperature: 1.0
+  post_curriculum_dropout: 0.2
+  # Disable class weighting entirely for fusion models
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+    
+  learning_rate: 9e-3
   # Dataset settings
   train_dataset: "IEMO"
   evaluation_mode: "cross_corpus"

@@ -4,11 +4,13 @@
 
 template_config: &template
   # Training hyperparameters (optimal)
-  learning_rate: 1e-5
+  learning_rate: 5e-6
   weight_decay: 5e-6
   num_epochs: 30
   batch_size: 64
   dropout: 0.1
+  post_curriculum_dropout: 0.2
+  loss_temperature: 2000
 
   # Dataset settings
   train_dataset: "IEMO"
@@ -19,15 +21,15 @@ template_config: &template
   audio_dim: 768
   text_model_name: "bert-base-uncased"
   freeze_text_encoder: true
-  text_max_length: 128
+  text_max_length: 512
 
   # Model architecture
   hidden_dim: 1024
   num_classes: 4
 
-  # Fusion settings (will be overridden per experiment)
-  fusion_hidden_dim: 512
-  num_attention_heads: 8
+  # Fusion settings 
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16 
 
   # Class weights
   class_weights:

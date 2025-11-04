@@ -20,7 +20,7 @@ template_config: &template
   text_model_name: "bert-base-uncased"
   freeze_text_encoder: true
   text_max_length: 1024
-
+`
   # Model architecture
   hidden_dim: 1024
   num_classes: 4
