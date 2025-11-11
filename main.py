@@ -620,36 +620,41 @@ class SimpleEmotionDataset(Dataset):
         self.split = split
         self.config = config
         self.modality = getattr(config, "modality", "audio")
+        self.audio_encoder_type = getattr(config, "audio_encoder_type", "preextracted")
 
-        # Load HuggingFace dataset
-        if dataset_name == "IEMO":
-            self.hf_dataset = load_dataset(
-                "cairocode/IEMO_Emotion2Vec_Text", split=split, trust_remote_code=True
-            )
-        elif dataset_name == "MSPI":
-            self.hf_dataset = load_dataset(
-                "cairocode/MSPI_Emotion2Vec_Text", split=split, trust_remote_code=True
-            )
-        elif dataset_name == "MSPP":
-            self.hf_dataset = load_dataset(
-                "cairocode/MSPP_Emotion2Vec_Text",
-                split=split,
-                trust_remote_code=True,
-            )
-        elif dataset_name == "CMUMOSEI":
-            self.hf_dataset = load_dataset(
-                "cairocode/CMU_MOSEI_EMOTION2VEC_4class_2",
-                split=split,
-                trust_remote_code=True,
-            )
-        elif dataset_name == "SAMSEMO":
-            self.hf_dataset = load_dataset(
-                "cairocode/samsemo_emotion2vec_4_V2",
-                split=split,
-                trust_remote_code=True,
-            )
-        else:
+        # Map dataset names to their merged dataset names (with audio + features)
+        # These datasets have both pre-extracted Emotion2Vec features AND raw audio
+        merged_dataset_map = {
+            "IEMO": "cairocode/IEMO_Audio_Text_Merged",
+            "MSPI": "cairocode/MSPI_Audio_Text_Merged",
+            "MSPP": "cairocode/MSPP_Audio_Text_Merged",
+            "CMUMOSEI": "cairocode/CMUMOSEI_Audio_Text_Merged",
+            "SAMSEMO": "cairocode/SAMSEMO_Audio_Text_Merged",
+        }
+
+        # Load HuggingFace merged dataset (has features, audio, and metadata)
+        if dataset_name not in merged_dataset_map:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+        dataset_path = merged_dataset_map[dataset_name]
+        self.hf_dataset = load_dataset(
+            dataset_path, split=split, trust_remote_code=True
+        )
+
+        print(f"📥 Loaded merged dataset: {dataset_path}")
+        print(f"   Columns: {self.hf_dataset.column_names}")
+
+        # Note: Merged datasets contain both pre-extracted features AND raw audio
+        # - Use audio_encoder_type="preextracted" to use Emotion2Vec features
+        # - Use audio_encoder_type="wav2vec2"/"hubert"/etc to use raw audio
+        if self.modality in ["audio", "both"] and self.audio_encoder_type != "preextracted":
+            if "audio" not in self.hf_dataset.column_names:
+                print(f"⚠️ Warning: 'audio' column not found in {dataset_name}")
+                print(f"   Available columns: {self.hf_dataset.column_names}")
+                print(f"   Falling back to pre-extracted features")
+                self.audio_encoder_type = "preextracted"
+            else:
+                print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
 
         # Process data
         self.data = []
@@ -657,15 +662,27 @@ class SimpleEmotionDataset(Dataset):
         for item in self.hf_dataset:
             # Extract audio features if needed for audio or multimodal mode
             if self.modality in ["audio", "both"]:
-                features = torch.tensor(
-                    item["emotion2vec_features"][0]["feats"], dtype=torch.float32
-                )
+                if self.audio_encoder_type == "preextracted":
+                    # Use pre-extracted Emotion2Vec features
+                    features = torch.tensor(
+                        item["emotion2vec_features"][0]["feats"], dtype=torch.float32
+                    )
 
-                # Calculate sequence length for curriculum learning
-                if len(features.shape) == 2:
-                    sequence_length = features.shape[0]  # [seq_len, feature_dim]
+                    # Calculate sequence length for curriculum learning
+                    if len(features.shape) == 2:
+                        sequence_length = features.shape[0]  # [seq_len, feature_dim]
+                    else:
+                        sequence_length = 1  # Already pooled to [feature_dim]
                 else:
-                    sequence_length = 1  # Already pooled to [feature_dim]
+                    # Use raw audio from merged dataset for wav2vec2/hubert/emotion2vec encoders
+                    if "audio" in item and item["audio"] is not None:
+                        # Store raw audio data (will be processed by audio encoder)
+                        # Audio format: {"array": [...], "sampling_rate": 16000, "path": "..."}
+                        features = item["audio"]
+                        sequence_length = 1  # Raw audio
+                    else:
+                        print(f"⚠️ Warning: No audio data found for item, skipping")
+                        continue
             else:
                 # Text-only mode: no audio features needed
                 features = None

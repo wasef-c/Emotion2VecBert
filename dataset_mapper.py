@@ -1,278 +1,201 @@
 #!/usr/bin/env python3
 """
-Dataset mapping utilities for linking WAV datasets to feature datasets
-Maps using common ID columns: video, filename, utterance, utterance_id
+Dataset utilities for emotion recognition with merged datasets
+
+All datasets now contain both pre-extracted features AND raw audio in a single dataset.
+No need for complex mapping - just load and use!
 """
 
 from datasets import load_dataset
-from typing import Dict, List, Optional, Tuple
 
 
-class DatasetMapper:
+# Merged dataset mappings - each contains features + audio + text + labels
+MERGED_DATASET_MAP = {
+    "IEMO": "cairocode/IEMO_Audio_Text_Merged",
+    "MSPI": "cairocode/MSPI_Audio_Text_Merged",
+    "MSPP": "cairocode/MSPP_WAV_Filtered_Ordered_v2",
+    "CMUMOSEI": "cairocode/cmu_mosei_wav",
+    "SAMSEMO": "cairocode/samsemo_audio",
+}
+
+
+def load_merged_dataset(dataset_name: str, split: str = "train"):
     """
-    Maps WAV datasets to feature datasets using common ID columns
-    """
-
-    # Mapping of dataset names to their WAV dataset counterparts
-    WAV_DATASET_MAP = {
-        "IEMO": [],  # Add IEMOCAP WAV dataset names here
-        "MSPI": ["cairocode/MSPI_WAV_Diff"],
-        "MSPP": ["cairocode/MSPP_WAV_Filtered_Ordered_v2"],
-        "CMUMOSEI": ["cairocode/cmu_mosei_wav_2"],
-        "SAMSEMO": [],  # Add SAMSEMO WAV dataset names here
-    }
-
-    # Common ID column names to try (in order of preference)
-    ID_COLUMNS = ["utterance_id", "utterance", "video", "filename", "file_name", "video_id"]
-
-    def __init__(self, dataset_name: str, feature_dataset_name: str, wav_dataset_name: Optional[str] = None):
-        """
-        Initialize dataset mapper
-
-        Args:
-            dataset_name: Name of the dataset (e.g., "MSPI", "MSPP")
-            feature_dataset_name: HuggingFace dataset name with features (e.g., "cairocode/MSPI_Emotion2Vec_Text")
-            wav_dataset_name: Optional specific WAV dataset name. If None, will auto-select
-        """
-        self.dataset_name = dataset_name
-        self.feature_dataset_name = feature_dataset_name
-
-        # Auto-select WAV dataset if not provided
-        if wav_dataset_name is None:
-            if dataset_name in self.WAV_DATASET_MAP:
-                wav_dataset_name = self.WAV_DATASET_MAP[dataset_name][0]  # Use first option
-                print(f"📁 Auto-selected WAV dataset: {wav_dataset_name}")
-            else:
-                raise ValueError(f"No WAV dataset mapping found for {dataset_name}")
-
-        self.wav_dataset_name = wav_dataset_name
-        self.id_column = None  # Will be detected
-
-    def find_common_id_column(self, feature_ds, wav_ds) -> str:
-        """
-        Find common ID column between feature and WAV datasets
-
-        Args:
-            feature_ds: Feature dataset
-            wav_ds: WAV dataset
-
-        Returns:
-            Common column name
-
-        Raises:
-            ValueError if no common column found
-        """
-        feature_cols = set(feature_ds.column_names)
-        wav_cols = set(wav_ds.column_names)
-
-        # Try each ID column in order of preference
-        for id_col in self.ID_COLUMNS:
-            if id_col in feature_cols and id_col in wav_cols:
-                print(f"✅ Found common ID column: '{id_col}'")
-                return id_col
-
-        # If no exact match, try to find similar columns
-        common_cols = feature_cols & wav_cols
-        if common_cols:
-            print(f"⚠️ No standard ID column found. Common columns: {common_cols}")
-            # Use first common column
-            id_col = list(common_cols)[0]
-            print(f"   Using '{id_col}' as ID column")
-            return id_col
-
-        raise ValueError(
-            f"No common ID column found between datasets.\n"
-            f"Feature columns: {feature_cols}\n"
-            f"WAV columns: {wav_cols}"
-        )
-
-    def load_datasets(self, split="train") -> Tuple[any, any, str]:
-        """
-        Load both feature and WAV datasets and find common ID column
-
-        Args:
-            split: Dataset split to load
-
-        Returns:
-            Tuple of (feature_dataset, wav_dataset, id_column)
-        """
-        print(f"📚 Loading datasets for split: {split}")
-        print(f"   Feature dataset: {self.feature_dataset_name}")
-        print(f"   WAV dataset: {self.wav_dataset_name}")
-
-        # Load datasets
-        feature_ds = load_dataset(self.feature_dataset_name, split=split, trust_remote_code=True)
-        wav_ds = load_dataset(self.wav_dataset_name, split=split, trust_remote_code=True)
-
-        print(f"   Feature dataset size: {len(feature_ds)}")
-        print(f"   WAV dataset size: {len(wav_ds)}")
-
-        # Find common ID column
-        id_column = self.find_common_id_column(feature_ds, wav_ds)
-        self.id_column = id_column
-
-        return feature_ds, wav_ds, id_column
-
-    def create_mapping_dict(self, feature_ds, wav_ds, id_column: str) -> Dict:
-        """
-        Create mapping dictionary from ID to WAV audio
-
-        Args:
-            feature_ds: Feature dataset
-            wav_ds: WAV dataset
-            id_column: Common ID column name
-
-        Returns:
-            Dictionary mapping ID to WAV audio data
-        """
-        print(f"🗺️  Creating mapping dictionary using column '{id_column}'...")
-
-        wav_map = {}
-        for item in wav_ds:
-            item_id = item[id_column]
-            wav_map[item_id] = item
-
-        print(f"   Created mapping for {len(wav_map)} WAV files")
-
-        # Check coverage
-        feature_ids = set(item[id_column] for item in feature_ds)
-        wav_ids = set(wav_map.keys())
-
-        matched = len(feature_ids & wav_ids)
-        total = len(feature_ids)
-
-        print(f"   Matched {matched}/{total} samples ({matched/total*100:.1f}%)")
-
-        if matched < total:
-            missing = total - matched
-            print(f"   ⚠️ {missing} samples from feature dataset not found in WAV dataset")
-
-        return wav_map
-
-    def get_audio_for_sample(self, sample: Dict, wav_map: Dict, id_column: str) -> Optional[Dict]:
-        """
-        Get WAV audio data for a given sample
-
-        Args:
-            sample: Sample from feature dataset
-            wav_map: Mapping dictionary
-            id_column: ID column name
-
-        Returns:
-            WAV audio data or None if not found
-        """
-        sample_id = sample[id_column]
-        return wav_map.get(sample_id)
-
-    @staticmethod
-    def get_wav_dataset_for_dataset(dataset_name: str) -> List[str]:
-        """
-        Get available WAV datasets for a given dataset name
-
-        Args:
-            dataset_name: Dataset name (e.g., "MSPI")
-
-        Returns:
-            List of available WAV dataset names
-        """
-        return DatasetMapper.WAV_DATASET_MAP.get(dataset_name, [])
-
-
-def create_merged_dataset_info(dataset_name: str, feature_dataset_name: str, wav_dataset_name: Optional[str] = None, split: str = "train"):
-    """
-    Utility function to inspect and merge dataset information
+    Load a merged dataset containing features, audio, text, and labels
 
     Args:
-        dataset_name: Dataset name (e.g., "MSPI")
-        feature_dataset_name: Feature dataset HuggingFace name
-        wav_dataset_name: Optional WAV dataset name
+        dataset_name: Name like "IEMO", "MSPI", "MSPP", "CMUMOSEI", or "SAMSEMO"
+        split: Dataset split (default: "train")
+
+    Returns:
+        HuggingFace Dataset with columns:
+          - emotion2vec_features: Pre-extracted audio features (for fast training)
+          - audio: Raw audio data {"array": [...], "sampling_rate": 16000}
+          - transcript/text: Text transcription
+          - label: Emotion label (0=angry, 1=happy, 2=neutral, 3=sad)
+          - Other metadata (speaker_id, valence, arousal, etc.)
+
+    Example:
+        >>> # Load dataset
+        >>> dataset = load_merged_dataset("MSPI", split="train")
+        >>> sample = dataset[0]
+        >>>
+        >>> # Use pre-extracted features (fast)
+        >>> features = sample["emotion2vec_features"][0]["feats"]
+        >>>
+        >>> # Or use raw audio (for wav2vec2/hubert)
+        >>> audio_array = sample["audio"]["array"]
+        >>> sampling_rate = sample["audio"]["sampling_rate"]
+        >>>
+        >>> # Get text and label
+        >>> transcript = sample["transcript"]
+        >>> label = sample["label"]
+    """
+    if dataset_name not in MERGED_DATASET_MAP:
+        raise ValueError(
+            f"Unknown dataset: {dataset_name}. "
+            f"Available: {list(MERGED_DATASET_MAP.keys())}"
+        )
+
+    dataset_path = MERGED_DATASET_MAP[dataset_name]
+    print(f"📥 Loading {dataset_name} from {dataset_path}")
+
+    dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
+
+    print(f"✅ Loaded {len(dataset)} samples")
+    print(f"   Columns: {dataset.column_names}")
+
+    return dataset
+
+
+def get_dataset_info(dataset_name: str, split: str = "train"):
+    """
+    Get information about a merged dataset without loading all data
+
+    Args:
+        dataset_name: Dataset name
         split: Dataset split
 
     Returns:
-        Dictionary with merged dataset info
+        Dictionary with dataset information
     """
-    mapper = DatasetMapper(dataset_name, feature_dataset_name, wav_dataset_name)
-    feature_ds, wav_ds, id_column = mapper.load_datasets(split)
-    wav_map = mapper.create_mapping_dict(feature_ds, wav_ds, id_column)
-
-    # Get sample statistics
-    sample = feature_ds[0]
-    wav_sample = mapper.get_audio_for_sample(sample, wav_map, id_column)
+    dataset = load_merged_dataset(dataset_name, split)
+    sample = dataset[0]
 
     info = {
         "dataset_name": dataset_name,
-        "feature_dataset": feature_dataset_name,
-        "wav_dataset": wav_dataset_name,
+        "dataset_path": MERGED_DATASET_MAP[dataset_name],
         "split": split,
-        "id_column": id_column,
-        "feature_columns": feature_ds.column_names,
-        "wav_columns": wav_ds.column_names,
-        "num_samples": len(feature_ds),
-        "num_matched": len(set(item[id_column] for item in feature_ds) & set(wav_map.keys())),
-        "sample_feature_keys": list(sample.keys()),
-        "sample_wav_keys": list(wav_sample.keys()) if wav_sample else None,
+        "num_samples": len(dataset),
+        "columns": dataset.column_names,
+        "has_audio": "audio" in sample,
+        "has_features": "emotion2vec_features" in sample,
+        "has_transcript": "transcript" in sample or "text" in sample,
+        "sample_keys": list(sample.keys()),
     }
+
+    # Check audio structure
+    if "audio" in sample and sample["audio"] is not None:
+        audio = sample["audio"]
+        if isinstance(audio, dict):
+            info["audio_keys"] = list(audio.keys())
+            if "array" in audio:
+                info["audio_length"] = len(audio["array"])
+            if "sampling_rate" in audio:
+                info["sampling_rate"] = audio["sampling_rate"]
 
     return info
 
 
 if __name__ == "__main__":
-    # Test the dataset mapper
-    print("Testing DatasetMapper...\n")
+    print("=" * 70)
+    print("MERGED DATASETS - Testing")
+    print("=" * 70)
+    print()
 
-    # Test MSPI dataset mapping
-    print("="*60)
-    print("Testing MSPI dataset mapping")
-    print("="*60)
+    # List available datasets
+    print("📋 Available Merged Datasets:")
+    for name, path in MERGED_DATASET_MAP.items():
+        print(f"   {name:12} → {path}")
+    print()
 
-    try:
-        info = create_merged_dataset_info(
-            dataset_name="MSPI",
-            feature_dataset_name="cairocode/MSPI_Emotion2Vec_Text",
-            wav_dataset_name="cairocode/MSPI_WAV_Diff",
-            split="train"
-        )
-
-        print(f"\n📊 Dataset Info:")
-        print(f"   Dataset: {info['dataset_name']}")
-        print(f"   ID Column: {info['id_column']}")
-        print(f"   Samples: {info['num_samples']}")
-        print(f"   Matched: {info['num_matched']}")
-        print(f"\n   Feature columns: {info['feature_columns'][:5]}...")
-        print(f"   WAV columns: {info['wav_columns'][:5]}...")
-
-    except Exception as e:
-        print(f"❌ Error testing MSPI: {e}")
-
-    # Test MSPP dataset mapping
-    print(f"\n{'='*60}")
-    print("Testing MSPP dataset mapping")
-    print("="*60)
+    # Test loading a dataset
+    print("=" * 70)
+    print("Testing MSPI merged dataset")
+    print("=" * 70)
+    print()
 
     try:
-        info = create_merged_dataset_info(
-            dataset_name="MSPP",
-            feature_dataset_name="cairocode/MSPP_Emotion2Vec_Text",
-            wav_dataset_name="cairocode/MSPP_WAV_Filtered_Ordered_v2",
-            split="train"
-        )
+        dataset = load_merged_dataset("MSPI", split="train")
+        sample = dataset[0]
 
-        print(f"\n📊 Dataset Info:")
-        print(f"   Dataset: {info['dataset_name']}")
-        print(f"   ID Column: {info['id_column']}")
-        print(f"   Samples: {info['num_samples']}")
-        print(f"   Matched: {info['num_matched']}")
+        print(f"📊 Sample structure:")
+        print(f"   Keys: {list(sample.keys())}")
+        print()
+
+        # Check for audio
+        if "audio" in sample and sample["audio"] is not None:
+            audio = sample["audio"]
+            if isinstance(audio, dict):
+                print(f"🎵 Audio data:")
+                print(f"   Format: dict")
+                print(f"   Keys: {list(audio.keys())}")
+                if "array" in audio:
+                    print(f"   Array length: {len(audio['array'])} samples")
+                    print(f"   Duration: {len(audio['array']) / audio.get('sampling_rate', 16000):.2f} seconds")
+                if "sampling_rate" in audio:
+                    print(f"   Sampling rate: {audio['sampling_rate']} Hz")
+                print()
+
+        # Check for features
+        if "emotion2vec_features" in sample:
+            print(f"🔊 Pre-extracted features:")
+            print(f"   Available: Yes")
+            features = sample["emotion2vec_features"]
+            if isinstance(features, list) and len(features) > 0:
+                feats = features[0].get("feats", [])
+                print(f"   Shape: {len(feats)} features")
+            print()
+
+        # Check for text
+        text = sample.get("transcript") or sample.get("text")
+        if text:
+            print(f"📝 Text transcript:")
+            print(f"   Text: \"{text[:100]}...\"" if len(text) > 100 else f"   Text: \"{text}\"")
+            print()
+
+        # Check for label
+        if "label" in sample:
+            label_names = {0: "angry", 1: "happy", 2: "neutral", 3: "sad"}
+            label = sample["label"]
+            print(f"🎯 Label:")
+            print(f"   Value: {label} ({label_names.get(label, 'unknown')})")
+            print()
+
+        print("✅ Merged dataset test completed!")
+        print()
+
+        # Show usage examples
+        print("=" * 70)
+        print("Usage Examples")
+        print("=" * 70)
+        print()
+        print("# Load dataset")
+        print('dataset = load_merged_dataset("MSPI", split="train")')
+        print("sample = dataset[0]")
+        print()
+        print("# Use pre-extracted features (fast training)")
+        print('features = sample["emotion2vec_features"][0]["feats"]')
+        print()
+        print("# Use raw audio (for wav2vec2/hubert)")
+        print('audio_array = sample["audio"]["array"]')
+        print('sampling_rate = sample["audio"]["sampling_rate"]')
+        print()
+        print("# Get text and label")
+        print('transcript = sample["transcript"]')
+        print('label = sample["label"]  # 0=angry, 1=happy, 2=neutral, 3=sad')
 
     except Exception as e:
-        print(f"❌ Error testing MSPP: {e}")
-
-    # List available WAV datasets
-    print(f"\n{'='*60}")
-    print("Available WAV datasets:")
-    print("="*60)
-    for dataset, wav_datasets in DatasetMapper.WAV_DATASET_MAP.items():
-        print(f"\n{dataset}:")
-        for wav_ds in wav_datasets:
-            print(f"  - {wav_ds}")
-
-    print("\n✅ DatasetMapper tests completed!")
+        print(f"❌ Error testing merged dataset: {e}")
+        import traceback
+        traceback.print_exc()

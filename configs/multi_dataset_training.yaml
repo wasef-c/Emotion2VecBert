@@ -17,7 +17,7 @@ template: &template
   # Multimodal settings
   modality: "both"
   audio_dim: 768
-  text_model_name: "bert-base-uncased"
+  text_model_name: "roberta-base"
   freeze_text_encoder: true
   text_max_length: 128
 
@@ -46,7 +46,7 @@ template: &template
   use_difficulty_scaling: true
   use_speaker_disentanglement: true
 
-  wandb_project: "MultiDataset_Training_V2"
+  wandb_project: "MultiDataset_Training_V4"
   seeds: [42, 37, 645]
 
   # Expected VAD values
@@ -61,6 +61,14 @@ experiments:
   # Two-Dataset Combinations
   # Each has BASELINE and FULL version
   # ============================================
+
+  # MSPP
+  - <<: *template
+    name: "MSPP_CrossAttn_Baseline"
+    train_dataset: ["MSPP"]
+    use_curriculum_learning: false
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
 
   # IEMO + MSPI
   - <<: *template

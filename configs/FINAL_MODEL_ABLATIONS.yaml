@@ -1,0 +1,295 @@
+# Example configurations showing how to use different audio and text encoders
+# This file demonstrates the various encoder options available
+
+# Common template for all experiments
+template_config: &template
+  # Fixed settings (best from ablation)
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16
+  train_dataset: "MSPP"
+  evaluation_mode: "cross_corpus"
+
+  # Model settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 512
+  hidden_dim: 1024
+  num_classes: 4
+  lr_scheduler_T_max: 60
+
+  # Default training settings (will be varied)
+  num_epochs: 30
+  batch_size: 64
+  learning_rate: 1e-5
+  weight_decay: 1e-3
+  dropout: 0.1
+
+  # Curriculum settings
+  use_curriculum_learning: true
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+
+  post_curriculum_dropout: 0.2
+  wandb_project: "FULLL MSPP ABLATION BAYEBEE V2"
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+  # Seeds
+  seeds: [32, 478]
+
+# List of experiments
+experiments:
+  # # ===================================================================
+  # # BASELINE: Pre-extracted Emotion2Vec + BERT
+  # # ===================================================================
+  # - <<: *template
+  #   name: "FULL Baseline_Emotion2Vec_BERT"
+  #   modality: "both"
+
+  #   # Audio: Use pre-extracted emotion2vec features (default)
+  #   audio_encoder_type: "preextracted"
+  #   audio_dim: 768
+
+  #   # Text: Use BERT base
+  #   text_model_name: "bert-base-uncased"
+
+  #   # Fusion
+  #   fusion_type: "cross_attention"
+  #   fusion_hidden_dim: 512
+  # ===================================================================
+  # TEXT MODEL VARIATIONS
+  # ===================================================================
+  - <<: *template
+    name: "FULL Emotion2Vec_RoBERTa"
+    modality: "both"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use RoBERTa instead of BERT
+    text_model_name: "roberta-base"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: " FULL Emotion2Vec_DistilBERT"
+    modality: "both"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use DistilBERT (faster, smaller)
+    text_model_name: "distilbert-base-uncased"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: "FULL Emotion2Vec_DeBERTa"
+    modality: "both"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use DeBERTa v3
+    text_model_name: "microsoft/deberta-v3-base"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  # ===================================================================
+  # AUDIO ENCODER VARIATIONS (requires WAV datasets)
+  # ===================================================================
+  - <<: *template
+    name: "FULL Wav2Vec2_BERT"
+    modality: "both"
+
+    # Audio: Use Wav2Vec2 encoder
+    audio_encoder_type: "wav2vec2"
+    audio_model_name: "facebook/wav2vec2-base-960h"
+    freeze_audio_encoder: true
+    audio_pooling: "mean"
+    # audio_dim will be auto-detected from model (768 for wav2vec2-base)
+
+    # Text: Standard BERT
+    text_model_name: "bert-base-uncased"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: "FULL HuBERT_RoBERTa"
+    modality: "both"
+
+    # Audio: Use HuBERT encoder
+    audio_encoder_type: "hubert"
+    audio_model_name: "facebook/hubert-base-ls960"
+    freeze_audio_encoder: true
+    audio_pooling: "mean"
+
+    # Text: RoBERTa
+    text_model_name: "roberta-base"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  # ===================================================================
+  # AUDIO-ONLY EXPERIMENTS
+  # ===================================================================
+  - <<: *template
+    name: "FULL AudioOnly_Emotion2Vec"
+    modality: "audio"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+  - <<: *template
+    name: "FULL AudioOnly_Wav2Vec2"
+    modality: "audio"
+
+    # Audio: Wav2Vec2 encoder (requires WAV dataset)
+    audio_encoder_type: "wav2vec2"
+    audio_model_name: "facebook/wav2vec2-base-960h"
+    freeze_audio_encoder: true
+    audio_pooling: "mean"
+
+
+    name: "HuBERT"
+    modality: "both"
+    # Audio: Use HuBERT encoder
+    audio_encoder_type: "hubert"
+    audio_model_name: "facebook/hubert-base-ls960"
+    freeze_audio_encoder: true
+    audio_pooling: "mean"
+    modality: "audio"
+
+
+
+  # ===================================================================
+  # FUSION TYPE COMPARISONS
+  # ===================================================================
+  - <<: *template
+    name: "FULL Emotion2Vec_BERT_ConcatFusion"
+    modality: "both"
+
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+    text_model_name: "bert-base-uncased"
+
+    # Different fusion type
+    fusion_type: "concat"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: "FULL Emotion2Vec_BERT_GatedFusion"
+    modality: "both"
+
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+    text_model_name: "bert-base-uncased"
+
+    # Different fusion type
+    fusion_type: "gated"
+    fusion_hidden_dim: 512
+
+  # ===================================================================
+  # FINE-TUNING EXPERIMENTS (Warning: expensive!)
+  # ===================================================================
+  - <<: *template
+    name: "FULL FineTune_Wav2Vec2_BERT"
+    modality: "both"
+
+    # Audio: Fine-tune Wav2Vec2
+    audio_encoder_type: "wav2vec2"
+    audio_model_name: "facebook/wav2vec2-base-960h"
+    freeze_audio_encoder: false  # Fine-tune audio encoder
+    audio_pooling: "mean"
+
+    # Text: Fine-tune BERT
+    text_model_name: "bert-base-uncased"
+    freeze_text_encoder: false  # Fine-tune text encoder
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+    # Lower learning rate for fine-tuning
+    learning_rate: 5e-5
+
+# ===================================================================
+# USAGE INSTRUCTIONS
+# ===================================================================
+#
+# To run a specific experiment:
+#   python main.py -c configs/model_encoder_examples.yaml -e 0   # Run first experiment
+#   python main.py -c configs/model_encoder_examples.yaml -e "Wav2Vec2_BERT"  # Run by name
+#
+# To run all experiments:
+#   python main.py -c configs/model_encoder_examples.yaml -a
+#
+# ===================================================================
+# AUDIO ENCODER OPTIONS
+# ===================================================================
+#
+# audio_encoder_type:
+#   - "preextracted": Use pre-extracted features (default, fastest)
+#   - "wav2vec2": Use Wav2Vec2 encoder (requires WAV dataset)
+#   - "hubert": Use HuBERT encoder (requires WAV dataset)
+#   - "emotion2vec": Use Emotion2Vec encoder (requires WAV dataset)
+#
+# audio_model_name: HuggingFace model name (or None for defaults)
+#   Wav2Vec2: "facebook/wav2vec2-base-960h", "facebook/wav2vec2-large-960h"
+#   HuBERT: "facebook/hubert-base-ls960", "facebook/hubert-large-ll60k"
+#   Emotion2Vec: "emotion2vec/emotion2vec_base"
+#
+# freeze_audio_encoder: true/false (keep encoder frozen or fine-tune)
+# audio_pooling: "mean", "first", "last", "max" (how to pool sequence features)
+#
+# ===================================================================
+# TEXT ENCODER OPTIONS
+# ===================================================================
+#
+# text_model_name: HuggingFace model name
+#   BERT: "bert-base-uncased", "bert-large-uncased"
+#   RoBERTa: "roberta-base", "roberta-large"
+#   DistilBERT: "distilbert-base-uncased" (faster, smaller)
+#   DeBERTa: "microsoft/deberta-v3-base", "microsoft/deberta-v3-large"
+#   ALBERT: "albert-base-v2", "albert-large-v2"
+#
+# freeze_text_encoder: true/false (keep encoder frozen or fine-tune)
+#
+# ===================================================================
+# FUSION OPTIONS (only for modality="both")
+# ===================================================================
+#
+# fusion_type:
+#   - "cross_attention": Cross-modal attention (best for capturing interactions)
+#   - "concat": Simple concatenation (fast, good baseline)
+#   - "gated": Learnable gating (adaptive weighting)
+#   - "adaptive": Can handle missing modalities
+#
+# fusion_hidden_dim: Hidden dimension for fusion module (typically 512)
+# num_attention_heads: Number of attention heads (for cross_attention, typically 8)

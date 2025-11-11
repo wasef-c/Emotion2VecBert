@@ -1,0 +1,190 @@
+# Example configurations showing how to use different audio and text encoders
+# This file demonstrates the various encoder options available
+
+# Common template for all experiments
+template_config: &template
+  # Fixed settings (best from ablation)
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 512
+  num_attention_heads: 16
+  train_dataset: "MSPP"
+  evaluation_mode: "cross_corpus"
+
+  # Model settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 512
+  hidden_dim: 512
+  num_classes: 4
+  lr_scheduler_T_max: 80
+
+  # Default training settings (will be varied)
+  num_epochs: 30
+  batch_size: 64
+  learning_rate: 5e-6
+  weight_decay: 1e-4
+  dropout: 0.1
+
+  # Curriculum settings
+  use_curriculum_learning: true
+  curriculum_epochs: 20
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
+
+  # Sinusoidal LR schedule: HIGH -> descend -> LOW -> jump -> MEDIUM-HIGH
+  use_curriculum_lr_schedule: true
+  curriculum_start_lr_multiplier: 4.0   # Start: 5e-6 * 3.0 = 1.5e-5 (HIGH - easy samples)
+  curriculum_end_lr_multiplier: 0.2     # End: 5e-6 * 0.2 = 1e-6 (LOW - hard samples)
+  post_curriculum_lr_multiplier: 1.0  # After: 5e-6 * 2.0 = 1e-5 (MEDIUM-HIGH - full data)
+  curriculum_lr_decay: "cosine"         # Smooth cosine decay during curriculum
+
+  post_curriculum_dropout: 0.2
+  wandb_project: "FULLL MSPP ABLATION BAYEBEE V3"
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+  # Seeds
+  seeds: [32, 478]
+
+# List of experiments
+experiments:
+  # ===================================================================
+  # BASELINE: Pre-extracted Emotion2Vec + BERT
+  # ===================================================================
+  - <<: *template
+    name: "Full Baseline_Emotion2Vec_BERT"
+    modality: "both"
+
+    # Audio: Use pre-extracted emotion2vec features (default)
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use BERT base
+    text_model_name: "bert-base-uncased"
+
+    # Fusion
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: "Full Emotion2Vec_RoBERTa"
+    modality: "both"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use RoBERTa instead of BERT
+    text_model_name: "roberta-base"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+  - <<: *template
+    name: "Baseline_Emotion2Vec_BERT"
+    modality: "both"
+
+    # Audio: Use pre-extracted emotion2vec features (default)
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use BERT base
+    text_model_name: "bert-base-uncased"
+
+    # Fusion
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    use_curriculum_learning: false
+
+  - <<: *template
+    name: "Emotion2Vec_RoBERTa"
+    modality: "both"
+
+    # Audio: Pre-extracted emotion2vec
+    audio_encoder_type: "preextracted"
+    audio_dim: 768
+
+    # Text: Use RoBERTa instead of BERT
+    text_model_name: "roberta-base"
+
+    fusion_type: "cross_attention"
+    fusion_hidden_dim: 512
+
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: false
+    use_curriculum_learning: false
+
+
+# ===================================================================
+# USAGE INSTRUCTIONS
+# ===================================================================
+#
+# To run a specific experiment:
+#   python main.py -c configs/model_encoder_examples.yaml -e 0   # Run first experiment
+#   python main.py -c configs/model_encoder_examples.yaml -e "Wav2Vec2_BERT"  # Run by name
+#
+# To run all experiments:
+#   python main.py -c configs/model_encoder_examples.yaml -a
+#
+# ===================================================================
+# AUDIO ENCODER OPTIONS
+# ===================================================================
+#
+# audio_encoder_type:
+#   - "preextracted": Use pre-extracted features (default, fastest)
+#   - "wav2vec2": Use Wav2Vec2 encoder (requires WAV dataset)
+#   - "hubert": Use HuBERT encoder (requires WAV dataset)
+#   - "emotion2vec": Use Emotion2Vec encoder (requires WAV dataset)
+#
+# audio_model_name: HuggingFace model name (or None for defaults)
+#   Wav2Vec2: "facebook/wav2vec2-base-960h", "facebook/wav2vec2-large-960h"
+#   HuBERT: "facebook/hubert-base-ls960", "facebook/hubert-large-ll60k"
+#   Emotion2Vec: "emotion2vec/emotion2vec_base"
+#
+# freeze_audio_encoder: true/false (keep encoder frozen or fine-tune)
+# audio_pooling: "mean", "first", "last", "max" (how to pool sequence features)
+#
+# ===================================================================
+# TEXT ENCODER OPTIONS
+# ===================================================================
+#
+# text_model_name: HuggingFace model name
+#   BERT: "bert-base-uncased", "bert-large-uncased"
+#   RoBERTa: "roberta-base", "roberta-large"
+#   DistilBERT: "distilbert-base-uncased" (faster, smaller)
+#   DeBERTa: "microsoft/deberta-v3-base", "microsoft/deberta-v3-large"
+#   ALBERT: "albert-base-v2", "albert-large-v2"
+#
+# freeze_text_encoder: true/false (keep encoder frozen or fine-tune)
+#
+# ===================================================================
+# FUSION OPTIONS (only for modality="both")
+# ===================================================================
+#
+# fusion_type:
+#   - "cross_attention": Cross-modal attention (best for capturing interactions)
+#   - "concat": Simple concatenation (fast, good baseline)
+#   - "gated": Learnable gating (adaptive weighting)
+#   - "adaptive": Can handle missing modalities
+#
+# fusion_hidden_dim: Hidden dimension for fusion module (typically 512)
+# num_attention_heads: Number of attention heads (for cross_attention, typically 8)
