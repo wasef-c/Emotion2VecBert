@@ -678,10 +678,16 @@ class SimpleEmotionDataset(Dataset):
             else:
                 print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
 
-        # Store metadata only - lazy load actual data in __getitem__
-        self.metadata = []
-
-        for idx, item in enumerate(self.hf_dataset):
+        # Ultra-lazy loading: don't even iterate through dataset
+        # Just store length and let __getitem__ handle everything
+        print(f"🔍 DEBUG: Dataset length: {len(self.hf_dataset)}")
+        
+        # Create dummy metadata for compatibility
+        self.metadata = [{"hf_index": i} for i in range(len(self.hf_dataset))]
+        
+        # Skip the full iteration that was causing memory issues
+        if False:  # Disable the problematic loop
+            for idx, item in enumerate(self.hf_dataset):
             # Calculate basic metadata without loading heavy data
             
             # Get speaker and session information
@@ -791,17 +797,31 @@ class SimpleEmotionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        metadata = self.metadata[idx]
-        hf_item = self.hf_dataset[metadata["hf_index"]]
+        hf_item = self.hf_dataset[idx]
+        
+        # Calculate metadata on-demand
+        label = hf_item["label"]
+        
+        # Quick speaker/session calculation
+        if self.dataset_name == "MSPP":
+            speaker_id = hf_item.get("SpkrID", 1)
+            session = (speaker_id - 1) // 500 + 1
+        else:
+            speaker_id = 1  # Simplified for now
+            session = 1
+            
+        # Quick difficulty calculation (simplified)
+        difficulty = 0.5  # Default neutral difficulty
+        curriculum_order = 0.5
         
         result = {
-            "label": torch.tensor(metadata["label"], dtype=torch.long),
-            "speaker_id": metadata["speaker_id"],
-            "session": metadata["session"],
-            "dataset": metadata["dataset"],
-            "difficulty": metadata["difficulty"],
-            "curriculum_order": metadata["curriculum_order"],
-            "sequence_length": metadata["sequence_length"],
+            "label": torch.tensor(label, dtype=torch.long),
+            "speaker_id": speaker_id,
+            "session": session,
+            "dataset": self.dataset_name,
+            "difficulty": difficulty,
+            "curriculum_order": curriculum_order,
+            "sequence_length": 1,
         }
 
         # Load audio features on-demand
