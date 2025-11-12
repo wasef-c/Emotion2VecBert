@@ -689,10 +689,16 @@ class SimpleEmotionDataset(Dataset):
         print(f"   Modality: {self.modality}")
         print(f"🔍 DEBUG: Dataset initialization complete")
 
-        # Precompute features and metadata to avoid memory issues during training
-        print(f"🔄 Precomputing features and metadata to avoid memory issues...")
-        self._precompute_all_data()
-        print(f"✅ Precomputed data for {len(self.data)} samples")
+        # Try to precompute features and metadata to avoid memory issues during training
+        print(f"🔄 Attempting to precompute features and metadata...")
+        try:
+            self._precompute_all_data()
+            print(f"✅ Precomputed data for {len(self.data)} samples")
+        except Exception as e:
+            print(f"⚠️ Precomputation failed: {e}")
+            print(f"🔧 Falling back to lazy loading (may cause memory issues during training)")
+            # Keep minimal metadata for compatibility
+            self.data = self.metadata
 
     def _precompute_all_data(self):
         """Precompute all features and metadata to avoid memory issues during training"""
@@ -775,12 +781,21 @@ class SimpleEmotionDataset(Dataset):
                             item["emotion2vec_features"][0]["feats"], dtype=torch.float32
                         )
                     elif encoder is not None and "audio" in item and item["audio"] is not None:
-                        # Use encoder to extract features
+                        # Use encoder to extract features with aggressive memory management
                         audio_data = item["audio"]
                         if isinstance(audio_data, dict) and "array" in audio_data:
                             with torch.no_grad():
-                                audio_tensor = torch.tensor([audio_data["array"]], dtype=torch.float32).to(device)
+                                # Truncate audio to 30 seconds max to avoid memory explosion
+                                max_samples = 30 * audio_data.get("sampling_rate", 16000)
+                                audio_array = audio_data["array"]
+                                if len(audio_array) > max_samples:
+                                    audio_array = audio_array[:max_samples]
+                                
+                                audio_tensor = torch.tensor([audio_array], dtype=torch.float32).to(device)
                                 features = encoder(audio_tensor).squeeze(0).cpu()
+                                
+                                # Immediately delete tensors to free memory
+                                del audio_tensor, audio_array
                         else:
                             features = torch.zeros(768)
                     else:
@@ -816,9 +831,13 @@ class SimpleEmotionDataset(Dataset):
                     "transcript": "[EMPTY]",
                 })
             
-            # Clear memory periodically
-            if i % 100 == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Clear memory very frequently
+            if i % 10 == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                # Force Python garbage collection
+                import gc
+                gc.collect()
         
         # Replace data with precomputed version
         self.data = new_data
