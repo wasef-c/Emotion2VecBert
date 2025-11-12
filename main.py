@@ -827,13 +827,17 @@ def train_epoch(
             features = batch["features"]
             # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
             if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
-                # Raw audio data - needs special handling
-                # For now, convert to tensor format that AudioEncoder expects
-                audio_arrays = [f["array"] for f in features if "array" in f]
-                if audio_arrays:
-                    # Convert to tensor and move to device
-                    # Note: This assumes all audio has same length (may need padding)
-                    features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                # Raw audio data - convert one by one to avoid large memory allocation
+                processed_features = []
+                for f in features:
+                    if "array" in f:
+                        # Convert individual audio array to tensor
+                        audio_tensor = torch.tensor(f["array"], dtype=torch.float32)
+                        processed_features.append(audio_tensor)
+                
+                if processed_features:
+                    # Stack individual tensors (this should use less memory)
+                    features = torch.stack(processed_features).to(device)
                 else:
                     # Fallback if no valid audio
                     features = torch.zeros(len(features), 768).to(device)
@@ -1225,10 +1229,7 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
         test_indices = train_sessions[test_session]
 
         # Get difficulties for curriculum learning
-        # Get difficulties by accessing __getitem__ which calculates them on-demand
-        train_difficulties = [
-            train_dataset[i]["difficulty"] for i in train_indices
-        ]
+        train_difficulties = [train_dataset[i]["difficulty"] for i in train_indices]
 
         # Create base datasets
         train_subset = Subset(train_dataset, train_indices)
@@ -1497,7 +1498,6 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     print(f"📋 Validation samples: {len(val_indices)}")
 
     # Get difficulties for curriculum learning
-    # Get difficulties by accessing __getitem__ which calculates them on-demand
     train_difficulties = [train_dataset[i]["difficulty"] for i in train_indices]
 
     # Create datasets

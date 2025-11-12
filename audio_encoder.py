@@ -74,6 +74,7 @@ class AudioEncoder(nn.Module):
                 print(f"   ⚠️ Model will be fine-tuned (freeze={freeze})")
 
             print(f"✅ Audio encoder loaded (output_dim={self.output_dim}, pooling={pooling})")
+            print(f"🔧 Model will stay on CPU to save GPU memory")
         else:
             raise ValueError(f"Unknown encoder_type: {encoder_type}")
 
@@ -149,7 +150,7 @@ class AudioEncoder(nn.Module):
         pooled_features = self._pool_features(hidden_states)
 
         # Clear intermediate outputs to free memory
-        del outputs
+        del outputs, hidden_states
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
