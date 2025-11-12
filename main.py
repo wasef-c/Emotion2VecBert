@@ -652,7 +652,7 @@ class SimpleEmotionDataset(Dataset):
             "MSPI": "cairocode/MSPI_Audio_Text_Merged",
             "MSPP": "cairocode/MSPP_WAV_Filtered_Ordered_v2",
             "CMUMOSEI": "cairocode/cmu_mosei_wav",
-            "SAMSEMO": "cairocode/samsemo_audio",
+            "SAMSEMO": "cairocode/samsemo-audio",
         }
         # Load HuggingFace merged dataset (has features, audio, and metadata)
         if dataset_name not in merged_dataset_map:
@@ -810,9 +810,34 @@ class SimpleEmotionDataset(Dataset):
             speaker_id = 1  # Simplified for now
             session = 1
             
-        # Quick difficulty calculation (simplified)
-        difficulty = 0.5  # Default neutral difficulty
-        curriculum_order = 0.5
+        # Calculate difficulty properly
+        valence = hf_item.get("valence", hf_item.get("EmoVal", 3.0))
+        arousal = hf_item.get("arousal", hf_item.get("EmoAct", 3.0))  
+        domination = hf_item.get("domination", hf_item.get("EmoDom", 3.0))
+        
+        # Fix NaN values
+        def fix_vad(value):
+            if value is None or (isinstance(value, float) and math.isnan(value)):
+                return 3.0
+            return value
+            
+        valence = fix_vad(valence)
+        arousal = fix_vad(arousal)
+        domination = fix_vad(domination)
+        
+        item_with_vad = {
+            "label": label,
+            "valence": valence,
+            "arousal": arousal,
+            "domination": domination,
+        }
+        difficulty = calculate_difficulty(
+            item_with_vad,
+            self.config.expected_vad,
+            self.config.difficulty_method,
+            dataset=self.dataset_name,
+        )
+        curriculum_order = hf_item.get("curriculum_order", 0.5)
         
         result = {
             "label": torch.tensor(label, dtype=torch.long),
