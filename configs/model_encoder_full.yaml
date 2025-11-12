@@ -136,7 +136,7 @@ experiments:
   - <<: *template
     name: "BASE_Wav2Vec2_BERT"
     audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
+    audio_model_name: "facebook/wav2vec2-small"
     freeze_audio_encoder: true
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
@@ -145,7 +145,7 @@ experiments:
   - <<: *template
     name: "FULL_Wav2Vec2_BERT"
     audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
+    audio_model_name: "facebook/wav2vec2-small"
     freeze_audio_encoder: true
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
@@ -161,7 +161,7 @@ experiments:
   - <<: *template
     name: "BASE_finetune_Wav2Vec2_BERT"
     audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
+    audio_model_name: "facebook/wav2vec2-small"
     freeze_audio_encoder: false
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
@@ -170,7 +170,7 @@ experiments:
   - <<: *template
     name: "FULL_finetune_Wav2Vec2_BERT"
     audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
+    audio_model_name: "facebook/wav2vec2-small"
     freeze_audio_encoder: false
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"

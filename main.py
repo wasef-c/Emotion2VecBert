@@ -775,6 +775,7 @@ class SimpleEmotionDataset(Dataset):
 
         print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
         print(f"   Modality: {self.modality}")
+        print(f"🔍 DEBUG: Dataset initialization complete")
 
         # Print session distribution for debugging
         session_counts = defaultdict(int)
@@ -784,6 +785,7 @@ class SimpleEmotionDataset(Dataset):
         print(f"📊 {dataset_name} Sessions:")
         for session_id in sorted(session_counts.keys()):
             print(f"   Session {session_id}: {session_counts[session_id]} samples")
+        print(f"🔍 DEBUG: Session counting complete")
 
     def __len__(self):
         return len(self.data)
@@ -1327,7 +1329,11 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
         config.audio_dim = actual_input_dim
 
         # Initialize model using factory function
-        model = create_model(config).to(device)
+        print(f"🔍 DEBUG: About to create model...")
+        model = create_model(config)
+        print(f"🔍 DEBUG: Model created, moving to device...")
+        model = model.to(device)
+        print(f"🔍 DEBUG: Model moved to device successfully")
 
         # Initialize text encoder if needed (external, for backward compatibility)
         text_encoder = None

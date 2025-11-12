@@ -45,10 +45,15 @@ class AudioEncoder(nn.Module):
         elif encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
             # Load pretrained transformer-based audio model
             print(f"📚 Loading audio model: {model_name} (type: {encoder_type})")
+            print(f"🔍 DEBUG: About to load model...")
 
             try:
+                print(f"🔍 DEBUG: Loading AutoModel...")
                 self.model = AutoModel.from_pretrained(model_name)
+                print(f"🔍 DEBUG: Model loaded successfully")
+                print(f"🔍 DEBUG: Loading feature extractor...")
                 self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
+                print(f"🔍 DEBUG: Feature extractor loaded successfully")
             except Exception as e:
                 print(f"⚠️ Could not load with AutoFeatureExtractor, trying Wav2Vec2FeatureExtractor...")
                 self.model = AutoModel.from_pretrained(model_name)
