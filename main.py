@@ -689,6 +689,76 @@ class SimpleEmotionDataset(Dataset):
         print(f"   Modality: {self.modality}")
         print(f"🔍 DEBUG: Dataset initialization complete")
 
+        # Precompute Wav2Vec2 features if using raw audio
+        if self.modality in ["audio", "both"] and self.audio_encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
+            print(f"🔄 Precomputing {self.audio_encoder_type} features to avoid memory issues...")
+            self.precomputed_features = self._precompute_audio_features()
+            print(f"✅ Precomputed features for {len(self.precomputed_features)} samples")
+        else:
+            self.precomputed_features = None
+
+    def _precompute_audio_features(self):
+        """Precompute audio features using audio encoder to avoid memory issues during training"""
+        from audio_encoder import AudioEncoder
+        
+        # Create audio encoder
+        encoder = AudioEncoder(
+            encoder_type=self.audio_encoder_type,
+            model_name=getattr(self.config, 'audio_model_name', None),
+            freeze=True,
+            pooling=getattr(self.config, 'audio_pooling', 'mean')
+        )
+        
+        # Keep encoder on CPU to save GPU memory
+        device = 'cpu'
+        encoder = encoder.to(device)
+        encoder.eval()
+        
+        precomputed_features = {}
+        batch_size = 1  # Process one at a time to avoid memory issues
+        
+        for i in range(0, len(self.hf_dataset), batch_size):
+            if i % 1000 == 0:
+                print(f"   Processing {i}/{len(self.hf_dataset)} samples...")
+                
+            batch_end = min(i + batch_size, len(self.hf_dataset))
+            
+            for j in range(i, batch_end):
+                try:
+                    item = self.hf_dataset[j]
+                    if "audio" in item and item["audio"] is not None:
+                        # Extract features using the encoder
+                        audio_data = item["audio"]
+                        
+                        # Convert to format expected by encoder
+                        if isinstance(audio_data, dict) and "array" in audio_data:
+                            with torch.no_grad():
+                                # Convert to tensor and add batch dimension
+                                audio_tensor = torch.tensor([audio_data["array"]], dtype=torch.float32).to(device)
+                                features = encoder(audio_tensor)
+                                # Remove batch dimension and store
+                                precomputed_features[j] = features.squeeze(0).cpu()
+                        else:
+                            # Fallback for missing/invalid audio
+                            precomputed_features[j] = torch.zeros(encoder.get_output_dim())
+                    else:
+                        # Fallback for missing audio
+                        precomputed_features[j] = torch.zeros(768)
+                        
+                except Exception as e:
+                    print(f"   Warning: Failed to process sample {j}: {e}")
+                    precomputed_features[j] = torch.zeros(768)
+                    
+                # Clear memory periodically
+                if j % 100 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        # Clear the encoder to free memory
+        del encoder
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        return precomputed_features
 
     def __len__(self):
         return len(self.data)
@@ -749,8 +819,11 @@ class SimpleEmotionDataset(Dataset):
                 features = torch.tensor(
                     hf_item["emotion2vec_features"][0]["feats"], dtype=torch.float32
                 )
+            elif self.precomputed_features is not None and idx in self.precomputed_features:
+                # Use precomputed Wav2Vec2/HuBERT features
+                features = self.precomputed_features[idx]
             else:
-                # Use raw audio for wav2vec2/hubert/emotion2vec encoders
+                # Use raw audio for wav2vec2/hubert/emotion2vec encoders (fallback)
                 if "audio" in hf_item and hf_item["audio"] is not None:
                     features = hf_item["audio"]
                 else:
