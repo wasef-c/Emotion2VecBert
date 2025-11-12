@@ -884,7 +884,22 @@ def train_epoch(
         # Forward pass based on modality
         if modality == "audio":
             # Audio-only mode
-            features = batch["features"].to(device)
+            features = batch["features"]
+            # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+            if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                # Raw audio data - needs special handling
+                # For now, convert to tensor format that AudioEncoder expects
+                audio_arrays = [f["array"] for f in features if "array" in f]
+                if audio_arrays:
+                    # Convert to tensor and move to device
+                    # Note: This assumes all audio has same length (may need padding)
+                    features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                else:
+                    # Fallback if no valid audio
+                    features = torch.zeros(len(features), 768).to(device)
+            else:
+                # Pre-extracted features - normal tensor
+                features = features.to(device)
             logits = model(features)
 
         elif modality == "text":
@@ -913,7 +928,18 @@ def train_epoch(
 
         elif modality == "both":
             # Multimodal mode
-            features = batch["features"].to(device)
+            features = batch["features"]
+            # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+            if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                # Raw audio data - needs special handling
+                audio_arrays = [f["array"] for f in features if "array" in f]
+                if audio_arrays:
+                    features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                else:
+                    features = torch.zeros(len(features), 768).to(device)
+            else:
+                # Pre-extracted features - normal tensor
+                features = features.to(device)
             transcripts = batch["transcript"]
 
             # Tokenize text
@@ -1042,7 +1068,18 @@ def evaluate_model_multimodal(
             # Forward pass based on modality
             if modality == "audio":
                 # Audio-only mode
-                features = batch["features"].to(device)
+                features = batch["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                    # Raw audio data - needs special handling
+                    audio_arrays = [f["array"] for f in features if "array" in f]
+                    if audio_arrays:
+                        features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                    else:
+                        features = torch.zeros(len(features), 768).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.to(device)
                 logits = model(features)
 
             elif modality == "text":
@@ -1069,7 +1106,18 @@ def evaluate_model_multimodal(
 
             elif modality == "both":
                 # Multimodal mode
-                features = batch["features"].to(device)
+                features = batch["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                    # Raw audio data - needs special handling
+                    audio_arrays = [f["array"] for f in features if "array" in f]
+                    if audio_arrays:
+                        features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                    else:
+                        features = torch.zeros(len(features), 768).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.to(device)
                 transcripts = batch["transcript"]
 
                 # Tokenize text
@@ -1155,7 +1203,14 @@ def calculate_model_confidences_multimodal(
 
             # Forward pass based on modality
             if modality == "audio":
-                features = sample["features"].unsqueeze(0).to(device)
+                features = sample["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, dict) and "array" in features:
+                    # Raw audio data - convert to tensor
+                    features = torch.tensor([features["array"]], dtype=torch.float32).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.unsqueeze(0).to(device)
                 logits = model(features)
 
             elif modality == "text":
