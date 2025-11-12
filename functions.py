@@ -127,9 +127,25 @@ def evaluate_model(model, data_loader, criterion, device, return_difficulties=Tr
 
 import math
 
-def calculate_difficulty(item, expected_vad, method="euclidean_distance", dataset=None):
-    """Calculate sample difficulty based on VAD values"""
+def calculate_difficulty(item, expected_vad, method="euclidean_distance", dataset=None, curriculum_type="difficulty"):
+    """Calculate sample difficulty based on curriculum type"""
     
+    # Annotator curriculum: 1 - overall_agreement
+    if curriculum_type == "preset_order":
+        overall_agreement = item.get('overall_agreement', 0.5)  # Default if missing
+        return 1.0 - overall_agreement
+    
+    # Random curriculum: random value
+    elif curriculum_type == "random":
+        import random
+        return random.random()
+    
+    # Confidence curriculum: will be calculated iteratively during training
+    elif curriculum_type == "model_confidence":
+        # Return neutral difficulty for now, will be updated during training
+        return 0.5
+    
+    # Standard difficulty calculation (also used for inverse_difficulty)
     label = item.get('label', 0)
     valence = item.get('valence', item.get('EmoVal'))
     arousal = item.get('arousal', item.get('EmoAct'))

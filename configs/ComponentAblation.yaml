@@ -29,13 +29,13 @@ template: &template
   dropout: 0.1
 
   # Curriculum settings
-  use_curriculum_learning: false
+  use_curriculum_learning: true
   curriculum_epochs: 15
   curriculum_pacing: "sqrt"
   curriculum_type: "difficulty"
   difficulty_method: "euclidean_distance"
-  use_difficulty_scaling: false
-  use_speaker_disentanglement: false
+  use_difficulty_scaling: true
+  use_speaker_disentanglement: true
 
   post_curriculum_dropout: 0.6
 
@@ -76,7 +76,7 @@ experiments:
     train_dataset: "MSPP"
     use_curriculum_learning: true
     use_speaker_disentanglement: false
-    use_difficulty_scaling: false
+    use_difficulty_scaling: true
     curriculum_type: inverse_difficulty
 
 
@@ -121,7 +121,7 @@ experiments:
     train_dataset: "MSPP"
     use_curriculum_learning: true
     use_speaker_disentanglement: false
-    use_difficulty_scaling: false
+    use_difficulty_scaling: true
     curriculum_type: preset_order
 
   - <<: *template
@@ -129,7 +129,7 @@ experiments:
     train_dataset: "MSPP"
     use_curriculum_learning: true
     use_speaker_disentanglement: false
-    use_difficulty_scaling: false
+    use_difficulty_scaling: true
     curriculum_type: model_confidence
 
 
@@ -138,6 +138,6 @@ experiments:
     train_dataset: "MSPP"
     use_curriculum_learning: true
     use_speaker_disentanglement: false
-    use_difficulty_scaling: false
+    use_difficulty_scaling: true
     curriculum_type: random
 
