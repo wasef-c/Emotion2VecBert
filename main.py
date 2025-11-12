@@ -1225,8 +1225,9 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
         test_indices = train_sessions[test_session]
 
         # Get difficulties for curriculum learning
+        # Get difficulties by accessing __getitem__ which calculates them on-demand
         train_difficulties = [
-            train_dataset.data[i]["difficulty"] for i in train_indices
+            train_dataset[i]["difficulty"] for i in train_indices
         ]
 
         # Create base datasets
@@ -1496,7 +1497,8 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     print(f"📋 Validation samples: {len(val_indices)}")
 
     # Get difficulties for curriculum learning
-    train_difficulties = [train_dataset.data[i]["difficulty"] for i in train_indices]
+    # Get difficulties by accessing __getitem__ which calculates them on-demand
+    train_difficulties = [train_dataset[i]["difficulty"] for i in train_indices]
 
     # Create datasets
     train_subset = Subset(train_dataset, train_indices)
