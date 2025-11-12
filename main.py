@@ -1228,8 +1228,23 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
         test_indices = train_sessions[test_session]
 
-        # Get difficulties for curriculum learning
-        train_difficulties = [train_dataset[i]["difficulty"] for i in train_indices]
+        # Get difficulties for curriculum learning in batches to avoid memory issues
+        print(f"🔍 Computing difficulties for {len(train_indices)} samples...")
+        train_difficulties = []
+        batch_size = 1000  # Process difficulties in batches
+        
+        for i in range(0, len(train_indices), batch_size):
+            batch_indices = train_indices[i:i+batch_size]
+            batch_difficulties = [train_dataset[idx]["difficulty"] for idx in batch_indices]
+            train_difficulties.extend(batch_difficulties)
+            
+            # Clear memory periodically
+            if i % 5000 == 0:
+                print(f"   Processed {min(i+batch_size, len(train_indices))}/{len(train_indices)} difficulties")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        print(f"✅ Difficulties computed successfully")
 
         # Create base datasets
         train_subset = Subset(train_dataset, train_indices)
@@ -1497,8 +1512,23 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     print(f"📈 Training samples: {len(train_indices)}")
     print(f"📋 Validation samples: {len(val_indices)}")
 
-    # Get difficulties for curriculum learning
-    train_difficulties = [train_dataset[i]["difficulty"] for i in train_indices]
+    # Get difficulties for curriculum learning in batches to avoid memory issues
+    print(f"🔍 Computing difficulties for {len(train_indices)} samples...")
+    train_difficulties = []
+    batch_size = 1000  # Process difficulties in batches
+    
+    for i in range(0, len(train_indices), batch_size):
+        batch_indices = train_indices[i:i+batch_size]
+        batch_difficulties = [train_dataset[idx]["difficulty"] for idx in batch_indices]
+        train_difficulties.extend(batch_difficulties)
+        
+        # Clear memory periodically
+        if i % 5000 == 0:
+            print(f"   Processed {min(i+batch_size, len(train_indices))}/{len(train_indices)} difficulties")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
+    print(f"✅ Difficulties computed successfully")
 
     # Create datasets
     train_subset = Subset(train_dataset, train_indices)
