@@ -678,120 +678,17 @@ class SimpleEmotionDataset(Dataset):
             else:
                 print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
 
-        # Ultra-lazy loading: don't even iterate through dataset
-        # Just store length and let __getitem__ handle everything
+        # Ultra-lazy loading: don't iterate through dataset at all
         print(f"🔍 DEBUG: Dataset length: {len(self.hf_dataset)}")
         
-        # Create dummy metadata for compatibility
+        # Create minimal dummy metadata for compatibility
         self.metadata = [{"hf_index": i} for i in range(len(self.hf_dataset))]
-        
-        # Skip the full iteration that was causing memory issues
-        if False:  # Disable the problematic loop
-            for idx, item in enumerate(self.hf_dataset):
-            # Calculate basic metadata without loading heavy data
-            
-            # Get speaker and session information
-            if Train == True:
-                # Get speaker ID and calculate session directly
-                if self.dataset_name == "IEMO":
-                    speaker_id = item["speaker_id"]
-                    session = (speaker_id - 1) // 2 + 1
-                elif self.dataset_name == "MSPI":
-                    speaker_id = item["speakerID"]
-                    session = (speaker_id - 947) // 2 + 1
-                elif self.dataset_name == "MSPP":
-                    speaker_id = item["SpkrID"]
-                    session = (speaker_id - 1) // 500 + 1
-                elif self.dataset_name == "CMUMOSEI":
-                    # CMU-MOSEI has video_id field
-                    speaker_id = hash(item.get("video_id", "unknown")) % 10000
-                    session = (speaker_id - 1) // 100 + 1
-                elif self.dataset_name == "SAMSEMO":
-                    # SAMSEMO may have speaker_id or file_name
-                    speaker_id = item.get(
-                        "speaker_id", hash(item.get("file_name", "unknown")) % 10000
-                    )
-                    session = (speaker_id - 1) // 100 + 1
-                else:
-                    # Fallback for other datasets
-                    try:
-                        speaker_id = item["speaker_id"]
-                    except:
-                        speaker_id = item.get("speakerID", item.get("SpkrID", 1))
-                    session = (speaker_id - 1) // 2 + 1
-            else:
-                speaker_id = -1  # Use -1 instead of None for test datasets
-                session = -1  # Use -1 instead of None for test datasets
-
-            label = item["label"]
-
-            # Get curriculum order from dataset
-            curriculum_order = item.get(
-                "curriculum_order", 0.5
-            )  # Default to middle if missing
-
-            # Get VAD values for difficulty calculation
-            valence = item.get("valence", item.get("EmoVal", None))
-            arousal = item.get("arousal", item.get("EmoAct", None))
-            domination = item.get(
-                "domination", item.get("consensus_dominance", item.get("EmoDom", None))
-            )
-
-            # Replace NaN or None with 3
-            def fix_vad(value):
-                if value is None or (isinstance(value, float) and math.isnan(value)):
-                    return 3
-                return value
-
-            valence = fix_vad(valence)
-            arousal = fix_vad(arousal)
-            domination = fix_vad(domination)
-            item_with_vad = {
-                "label": label,
-                "valence": valence,
-                "arousal": arousal,
-                "domination": domination,
-            }
-            difficulty = calculate_difficulty(
-                item_with_vad,
-                config.expected_vad,
-                config.difficulty_method,
-                dataset=dataset_name,
-            )
-
-            # Store only metadata - audio/text will be loaded on-demand
-            self.metadata.append(
-                {
-                    "hf_index": idx,  # Index into original HF dataset
-                    "label": label,
-                    "speaker_id": speaker_id,
-                    "session": session,
-                    "dataset": dataset_name,
-                    "difficulty": difficulty,
-                    "curriculum_order": curriculum_order,
-                    "sequence_length": 1,  # Will be calculated on-demand
-                    "valence": valence,
-                    "arousal": arousal,
-                    "domination": domination,
-                }
-            )
-
-        # Keep reference to original data for compatibility with existing code
         self.data = self.metadata
 
         print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
         print(f"   Modality: {self.modality}")
         print(f"🔍 DEBUG: Dataset initialization complete")
 
-        # Print session distribution for debugging
-        session_counts = defaultdict(int)
-        for item in self.data:
-            session_counts[item["session"]] += 1
-
-        print(f"📊 {dataset_name} Sessions:")
-        for session_id in sorted(session_counts.keys()):
-            print(f"   Session {session_id}: {session_counts[session_id]} samples")
-        print(f"🔍 DEBUG: Session counting complete")
 
     def __len__(self):
         return len(self.data)
@@ -802,13 +699,9 @@ class SimpleEmotionDataset(Dataset):
         # Calculate metadata on-demand
         label = hf_item["label"]
         
-        # Quick speaker/session calculation
-        if self.dataset_name == "MSPP":
-            speaker_id = hf_item.get("SpkrID", 1)
-            session = (speaker_id - 1) // 500 + 1
-        else:
-            speaker_id = 1  # Simplified for now
-            session = 1
+        # Simplified speaker/session (not needed for basic training)
+        speaker_id = 1
+        session = 1
             
         # Calculate difficulty properly
         valence = hf_item.get("valence", hf_item.get("EmoVal", 3.0))
