@@ -689,163 +689,174 @@ class SimpleEmotionDataset(Dataset):
         print(f"   Modality: {self.modality}")
         print(f"🔍 DEBUG: Dataset initialization complete")
 
-        # Precompute Wav2Vec2 features if using raw audio
-        if self.modality in ["audio", "both"] and self.audio_encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
-            print(f"🔄 Precomputing {self.audio_encoder_type} features to avoid memory issues...")
-            self.precomputed_features = self._precompute_audio_features()
-            print(f"✅ Precomputed features for {len(self.precomputed_features)} samples")
-        else:
-            self.precomputed_features = None
+        # Precompute features and metadata to avoid memory issues during training
+        print(f"🔄 Precomputing features and metadata to avoid memory issues...")
+        self._precompute_all_data()
+        print(f"✅ Precomputed data for {len(self.data)} samples")
 
-    def _precompute_audio_features(self):
-        """Precompute audio features using audio encoder to avoid memory issues during training"""
-        from audio_encoder import AudioEncoder
+    def _precompute_all_data(self):
+        """Precompute all features and metadata to avoid memory issues during training"""
+        # Create audio encoder if needed
+        encoder = None
+        if self.modality in ["audio", "both"] and self.audio_encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
+            from audio_encoder import AudioEncoder
+            encoder = AudioEncoder(
+                encoder_type=self.audio_encoder_type,
+                model_name=getattr(self.config, 'audio_model_name', None),
+                freeze=True,
+                pooling=getattr(self.config, 'audio_pooling', 'mean')
+            )
+            # Keep encoder on CPU to save GPU memory
+            device = 'cpu'
+            encoder = encoder.to(device)
+            encoder.eval()
+            print(f"   Created {self.audio_encoder_type} encoder for feature extraction")
         
-        # Create audio encoder
-        encoder = AudioEncoder(
-            encoder_type=self.audio_encoder_type,
-            model_name=getattr(self.config, 'audio_model_name', None),
-            freeze=True,
-            pooling=getattr(self.config, 'audio_pooling', 'mean')
-        )
+        # Process all items and store complete metadata
+        new_data = []
         
-        # Keep encoder on CPU to save GPU memory
-        device = 'cpu'
-        encoder = encoder.to(device)
-        encoder.eval()
-        
-        precomputed_features = {}
-        batch_size = 1  # Process one at a time to avoid memory issues
-        
-        for i in range(0, len(self.hf_dataset), batch_size):
+        for i in range(len(self.hf_dataset)):
             if i % 1000 == 0:
                 print(f"   Processing {i}/{len(self.hf_dataset)} samples...")
-                
-            batch_end = min(i + batch_size, len(self.hf_dataset))
             
-            for j in range(i, batch_end):
-                try:
-                    item = self.hf_dataset[j]
-                    if "audio" in item and item["audio"] is not None:
-                        # Extract features using the encoder
+            try:
+                item = self.hf_dataset[i]
+                
+                # Extract all metadata
+                label = item["label"]
+                
+                # Speaker/session info (simplified)
+                if self.dataset_name == "MSPP":
+                    speaker_id = item.get("SpkrID", 1)
+                    session = (speaker_id - 1) // 500 + 1
+                else:
+                    speaker_id = 1
+                    session = 1
+                
+                # Calculate difficulty
+                valence = item.get("valence", item.get("EmoVal", 3.0))
+                arousal = item.get("arousal", item.get("EmoAct", 3.0))  
+                domination = item.get("domination", item.get("EmoDom", 3.0))
+                
+                # Fix NaN values
+                def fix_vad(value):
+                    if value is None or (isinstance(value, float) and math.isnan(value)):
+                        return 3.0
+                    return value
+                    
+                valence = fix_vad(valence)
+                arousal = fix_vad(arousal)
+                domination = fix_vad(domination)
+                
+                item_with_vad = {
+                    "label": label,
+                    "valence": valence,
+                    "arousal": arousal,
+                    "domination": domination,
+                }
+                difficulty = calculate_difficulty(
+                    item_with_vad,
+                    self.config.expected_vad,
+                    self.config.difficulty_method,
+                    dataset=self.dataset_name,
+                )
+                curriculum_order = item.get("curriculum_order", 0.5)
+                
+                # Extract text if needed
+                transcript = None
+                if self.modality in ["text", "both"]:
+                    transcript = item.get("transcript", item.get("text", "[EMPTY]"))
+                
+                # Extract/compute audio features if needed
+                features = None
+                if self.modality in ["audio", "both"]:
+                    if self.audio_encoder_type == "preextracted":
+                        features = torch.tensor(
+                            item["emotion2vec_features"][0]["feats"], dtype=torch.float32
+                        )
+                    elif encoder is not None and "audio" in item and item["audio"] is not None:
+                        # Use encoder to extract features
                         audio_data = item["audio"]
-                        
-                        # Convert to format expected by encoder
                         if isinstance(audio_data, dict) and "array" in audio_data:
                             with torch.no_grad():
-                                # Convert to tensor and add batch dimension
                                 audio_tensor = torch.tensor([audio_data["array"]], dtype=torch.float32).to(device)
-                                features = encoder(audio_tensor)
-                                # Remove batch dimension and store
-                                precomputed_features[j] = features.squeeze(0).cpu()
+                                features = encoder(audio_tensor).squeeze(0).cpu()
                         else:
-                            # Fallback for missing/invalid audio
-                            precomputed_features[j] = torch.zeros(encoder.get_output_dim())
+                            features = torch.zeros(768)
                     else:
-                        # Fallback for missing audio
-                        precomputed_features[j] = torch.zeros(768)
-                        
-                except Exception as e:
-                    print(f"   Warning: Failed to process sample {j}: {e}")
-                    precomputed_features[j] = torch.zeros(768)
-                    
-                # Clear memory periodically
-                if j % 100 == 0 and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                        features = torch.zeros(768)
+                
+                # Store complete item data
+                item_data = {
+                    "label": label,
+                    "speaker_id": speaker_id,
+                    "session": session,
+                    "dataset": self.dataset_name,
+                    "difficulty": difficulty,
+                    "curriculum_order": curriculum_order,
+                    "sequence_length": 1,
+                    "features": features,
+                    "transcript": transcript,
+                }
+                
+                new_data.append(item_data)
+                
+            except Exception as e:
+                print(f"   Warning: Failed to process sample {i}: {e}")
+                # Add dummy data for failed samples
+                new_data.append({
+                    "label": 0,
+                    "speaker_id": 1,
+                    "session": 1,
+                    "dataset": self.dataset_name,
+                    "difficulty": 0.5,
+                    "curriculum_order": 0.5,
+                    "sequence_length": 1,
+                    "features": torch.zeros(768),
+                    "transcript": "[EMPTY]",
+                })
+            
+            # Clear memory periodically
+            if i % 100 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
-        # Clear the encoder to free memory
-        del encoder
+        # Replace data with precomputed version
+        self.data = new_data
+        
+        # Clear the encoder and HF dataset to free massive amounts of memory
+        if encoder is not None:
+            del encoder
+        del self.hf_dataset  # This should free the raw audio data
+        self.hf_dataset = None
+        
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             
-        return precomputed_features
+        print(f"   Cleared raw audio data from memory")
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        hf_item = self.hf_dataset[idx]
-        
-        # Calculate metadata on-demand
-        label = hf_item["label"]
-        
-        # Simplified speaker/session (not needed for basic training)
-        speaker_id = 1
-        session = 1
-            
-        # Calculate difficulty properly
-        valence = hf_item.get("valence", hf_item.get("EmoVal", 3.0))
-        arousal = hf_item.get("arousal", hf_item.get("EmoAct", 3.0))  
-        domination = hf_item.get("domination", hf_item.get("EmoDom", 3.0))
-        
-        # Fix NaN values
-        def fix_vad(value):
-            if value is None or (isinstance(value, float) and math.isnan(value)):
-                return 3.0
-            return value
-            
-        valence = fix_vad(valence)
-        arousal = fix_vad(arousal)
-        domination = fix_vad(domination)
-        
-        item_with_vad = {
-            "label": label,
-            "valence": valence,
-            "arousal": arousal,
-            "domination": domination,
-        }
-        difficulty = calculate_difficulty(
-            item_with_vad,
-            self.config.expected_vad,
-            self.config.difficulty_method,
-            dataset=self.dataset_name,
-        )
-        curriculum_order = hf_item.get("curriculum_order", 0.5)
+        # All data is precomputed, just return it directly
+        item = self.data[idx]
         
         result = {
-            "label": torch.tensor(label, dtype=torch.long),
-            "speaker_id": speaker_id,
-            "session": session,
-            "dataset": self.dataset_name,
-            "difficulty": difficulty,
-            "curriculum_order": curriculum_order,
-            "sequence_length": 1,
+            "label": torch.tensor(item["label"], dtype=torch.long),
+            "speaker_id": item["speaker_id"],
+            "session": item["session"],
+            "dataset": item["dataset"],
+            "difficulty": item["difficulty"],
+            "curriculum_order": item["curriculum_order"],
+            "sequence_length": item["sequence_length"],
         }
 
-        # Load audio features on-demand
-        if self.modality in ["audio", "both"]:
-            if self.audio_encoder_type == "preextracted":
-                # Use pre-extracted Emotion2Vec features
-                features = torch.tensor(
-                    hf_item["emotion2vec_features"][0]["feats"], dtype=torch.float32
-                )
-            elif self.precomputed_features is not None and idx in self.precomputed_features:
-                # Use precomputed Wav2Vec2/HuBERT features
-                features = self.precomputed_features[idx]
-            else:
-                # Use raw audio for wav2vec2/hubert/emotion2vec encoders (fallback)
-                if "audio" in hf_item and hf_item["audio"] is not None:
-                    features = hf_item["audio"]
-                else:
-                    # Fallback to dummy features if audio missing
-                    features = torch.zeros(768)
-            
-            result["features"] = features
+        # Add modality-specific data (already precomputed)
+        if self.modality in ["audio", "both"] and item["features"] is not None:
+            result["features"] = item["features"]
 
-        # Load text on-demand
-        if self.modality in ["text", "both"]:
-            # Try to get the 'transcript'
-            transcript = hf_item.get("transcript")
-            
-            # If 'transcript' is missing or None, try 'text' as fallback
-            if transcript is None or transcript == "":
-                transcript = hf_item.get("text")
-            
-            # Handle cases where both are missing/empty
-            if transcript is None or transcript == "":
-                transcript = "[EMPTY]"
-                
-            result["transcript"] = transcript
+        if self.modality in ["text", "both"] and item["transcript"] is not None:
+            result["transcript"] = item["transcript"]
 
         return result
 
@@ -1301,23 +1312,8 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
         test_indices = train_sessions[test_session]
 
-        # Get difficulties for curriculum learning in batches to avoid memory issues
-        print(f"🔍 Computing difficulties for {len(train_indices)} samples...")
-        train_difficulties = []
-        batch_size = 1000  # Process difficulties in batches
-        
-        for i in range(0, len(train_indices), batch_size):
-            batch_indices = train_indices[i:i+batch_size]
-            batch_difficulties = [train_dataset[idx]["difficulty"] for idx in batch_indices]
-            train_difficulties.extend(batch_difficulties)
-            
-            # Clear memory periodically
-            if i % 5000 == 0:
-                print(f"   Processed {min(i+batch_size, len(train_indices))}/{len(train_indices)} difficulties")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-        
-        print(f"✅ Difficulties computed successfully")
+        # Get difficulties from precomputed data (fast now!)
+        train_difficulties = [train_dataset.data[i]["difficulty"] for i in train_indices]
 
         # Create base datasets
         train_subset = Subset(train_dataset, train_indices)
@@ -1585,23 +1581,8 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     print(f"📈 Training samples: {len(train_indices)}")
     print(f"📋 Validation samples: {len(val_indices)}")
 
-    # Get difficulties for curriculum learning in batches to avoid memory issues
-    print(f"🔍 Computing difficulties for {len(train_indices)} samples...")
-    train_difficulties = []
-    batch_size = 1000  # Process difficulties in batches
-    
-    for i in range(0, len(train_indices), batch_size):
-        batch_indices = train_indices[i:i+batch_size]
-        batch_difficulties = [train_dataset[idx]["difficulty"] for idx in batch_indices]
-        train_difficulties.extend(batch_difficulties)
-        
-        # Clear memory periodically
-        if i % 5000 == 0:
-            print(f"   Processed {min(i+batch_size, len(train_indices))}/{len(train_indices)} difficulties")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-    
-    print(f"✅ Difficulties computed successfully")
+    # Get difficulties from precomputed data (fast now!)
+    train_difficulties = [train_dataset.data[i]["difficulty"] for i in train_indices]
 
     # Create datasets
     train_subset = Subset(train_dataset, train_indices)
