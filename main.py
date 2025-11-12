@@ -650,11 +650,10 @@ class SimpleEmotionDataset(Dataset):
         merged_dataset_map = {
             "IEMO": "cairocode/IEMO_Audio_Text_Merged",
             "MSPI": "cairocode/MSPI_Audio_Text_Merged",
-            "MSPP": "cairocode/MSPP_Audio_Text_Merged",
-            "CMUMOSEI": "cairocode/CMUMOSEI_Audio_Text_Merged",
-            "SAMSEMO": "cairocode/SAMSEMO_Audio_Text_Merged",
+            "MSPP": "cairocode/MSPP_WAV_Filtered_Ordered_v2",
+            "CMUMOSEI": "cairocode/cmu_mosei_wav",
+            "SAMSEMO": "cairocode/samsemo_audio",
         }
-
         # Load HuggingFace merged dataset (has features, audio, and metadata)
         if dataset_name not in merged_dataset_map:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
@@ -679,53 +678,12 @@ class SimpleEmotionDataset(Dataset):
             else:
                 print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
 
-        # Process data
-        self.data = []
+        # Store metadata only - lazy load actual data in __getitem__
+        self.metadata = []
 
-        for item in self.hf_dataset:
-            # Extract audio features if needed for audio or multimodal mode
-            if self.modality in ["audio", "both"]:
-                if self.audio_encoder_type == "preextracted":
-                    # Use pre-extracted Emotion2Vec features
-                    features = torch.tensor(
-                        item["emotion2vec_features"][0]["feats"], dtype=torch.float32
-                    )
-
-                    # Calculate sequence length for curriculum learning
-                    if len(features.shape) == 2:
-                        sequence_length = features.shape[0]  # [seq_len, feature_dim]
-                    else:
-                        sequence_length = 1  # Already pooled to [feature_dim]
-                else:
-                    # Use raw audio from merged dataset for wav2vec2/hubert/emotion2vec encoders
-                    if "audio" in item and item["audio"] is not None:
-                        # Store raw audio data (will be processed by audio encoder)
-                        # Audio format: {"array": [...], "sampling_rate": 16000, "path": "..."}
-                        features = item["audio"]
-                        sequence_length = 1  # Raw audio
-                    else:
-                        print(f"⚠️ Warning: No audio data found for item, skipping")
-                        continue
-            else:
-                # Text-only mode: no audio features needed
-                features = None
-                sequence_length = 1
-
-            # Extract transcript for text or multimodal mode
-            if self.modality in ["text", "both"]:
-                # 1. Try to get the 'transcript'
-                transcript = item.get("transcript")
-
-                # 2. If 'transcript' is missing or None, try 'text' as a fallback
-                if transcript is None or transcript == "":
-                    transcript = item.get("text")
-
-                # 3. Handle cases where both 'transcript' and 'text' are missing/empty
-                if transcript is None or transcript == "":
-                    transcript = "[EMPTY]"  # Placeholder for missing transcripts
-            else:
-                transcript = None
-
+        for idx, item in enumerate(self.hf_dataset):
+            # Calculate basic metadata without loading heavy data
+            
             # Get speaker and session information
             if Train == True:
                 # Get speaker ID and calculate session directly
@@ -795,22 +753,25 @@ class SimpleEmotionDataset(Dataset):
                 dataset=dataset_name,
             )
 
-            self.data.append(
+            # Store only metadata - audio/text will be loaded on-demand
+            self.metadata.append(
                 {
-                    "features": features,
-                    "transcript": transcript,
+                    "hf_index": idx,  # Index into original HF dataset
                     "label": label,
                     "speaker_id": speaker_id,
                     "session": session,
                     "dataset": dataset_name,
                     "difficulty": difficulty,
                     "curriculum_order": curriculum_order,
-                    "sequence_length": sequence_length,
+                    "sequence_length": 1,  # Will be calculated on-demand
                     "valence": valence,
                     "arousal": arousal,
                     "domination": domination,
                 }
             )
+
+        # Keep reference to original data for compatibility with existing code
+        self.data = self.metadata
 
         print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
         print(f"   Modality: {self.modality}")
@@ -828,23 +789,50 @@ class SimpleEmotionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        item = self.data[idx]
+        metadata = self.metadata[idx]
+        hf_item = self.hf_dataset[metadata["hf_index"]]
+        
         result = {
-            "label": torch.tensor(item["label"], dtype=torch.long),
-            "speaker_id": item["speaker_id"],
-            "session": item["session"],
-            "dataset": item["dataset"],
-            "difficulty": item["difficulty"],
-            "curriculum_order": item["curriculum_order"],
-            "sequence_length": item["sequence_length"],
+            "label": torch.tensor(metadata["label"], dtype=torch.long),
+            "speaker_id": metadata["speaker_id"],
+            "session": metadata["session"],
+            "dataset": metadata["dataset"],
+            "difficulty": metadata["difficulty"],
+            "curriculum_order": metadata["curriculum_order"],
+            "sequence_length": metadata["sequence_length"],
         }
 
-        # Add modality-specific data
+        # Load audio features on-demand
         if self.modality in ["audio", "both"]:
-            result["features"] = item["features"]
+            if self.audio_encoder_type == "preextracted":
+                # Use pre-extracted Emotion2Vec features
+                features = torch.tensor(
+                    hf_item["emotion2vec_features"][0]["feats"], dtype=torch.float32
+                )
+            else:
+                # Use raw audio for wav2vec2/hubert/emotion2vec encoders
+                if "audio" in hf_item and hf_item["audio"] is not None:
+                    features = hf_item["audio"]
+                else:
+                    # Fallback to dummy features if audio missing
+                    features = torch.zeros(768)
+            
+            result["features"] = features
 
+        # Load text on-demand
         if self.modality in ["text", "both"]:
-            result["transcript"] = item["transcript"]
+            # Try to get the 'transcript'
+            transcript = hf_item.get("transcript")
+            
+            # If 'transcript' is missing or None, try 'text' as fallback
+            if transcript is None or transcript == "":
+                transcript = hf_item.get("text")
+            
+            # Handle cases where both are missing/empty
+            if transcript is None or transcript == "":
+                transcript = "[EMPTY]"
+                
+            result["transcript"] = transcript
 
         return result
 
