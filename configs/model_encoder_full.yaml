@@ -131,7 +131,7 @@ experiments:
 #     use_speaker_disentanglement: true
 
   # ===================================================================
-  # Wav2Vec2 + BERT (BASE & FULL)
+  # Wav2Vec2 + BERT (BASE & FULL) - Memory Optimized
   # ===================================================================
   - <<: *template
     name: "BASE_Wav2Vec2_BERT"
@@ -140,6 +140,7 @@ experiments:
     freeze_audio_encoder: true
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
+    batch_size: 16  # Reduced from 64 for memory efficiency
 
   - <<: *template
     name: "FULL_Wav2Vec2_BERT"
@@ -148,13 +149,14 @@ experiments:
     freeze_audio_encoder: true
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
+    batch_size: 16  # Reduced from 64 for memory efficiency
     use_curriculum_learning: true
     use_difficulty_scaling: true
     use_speaker_disentanglement: true
 
 
   # ===================================================================
-  # Wav2Vec2 + BERT (BASE & FULL) finetune
+  # Wav2Vec2 + BERT (BASE & FULL) finetune - Memory Optimized
   # ===================================================================
   - <<: *template
     name: "BASE_finetune_Wav2Vec2_BERT"
@@ -163,6 +165,7 @@ experiments:
     freeze_audio_encoder: false
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
+    batch_size: 8  # Even smaller for finetuning (requires more memory)
 
   - <<: *template
     name: "FULL_finetune_Wav2Vec2_BERT"
@@ -171,6 +174,7 @@ experiments:
     freeze_audio_encoder: false
     audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
+    batch_size: 8  # Even smaller for finetuning (requires more memory)
     use_curriculum_learning: true
     use_difficulty_scaling: true
     use_speaker_disentanglement: true

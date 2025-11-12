@@ -114,11 +114,17 @@ class AudioEncoder(nn.Module):
                 return self._extract_with_model(audio_input)
 
     def _extract_with_model(self, audio_input):
-        """Extract features using the transformer model"""
+        """Extract features using the transformer model with memory optimization"""
         # Check if input is raw waveform or already processed features
         if len(audio_input.shape) == 2 and audio_input.shape[-1] > 1000:
             # Likely raw waveform [batch_size, samples]
-            outputs = self.model(audio_input, return_dict=True)
+            # Enable gradient checkpointing for memory efficiency during training
+            if self.training and hasattr(self.model, 'gradient_checkpointing_enable'):
+                self.model.gradient_checkpointing_enable()
+            
+            # Use mixed precision if available
+            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+                outputs = self.model(audio_input, return_dict=True)
         else:
             # Already processed features [batch_size, seq_len, hidden_dim]
             # This handles the case where features are pre-extracted but we still want pooling
@@ -127,8 +133,13 @@ class AudioEncoder(nn.Module):
         # Get hidden states
         hidden_states = outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
 
-        # Apply pooling
+        # Apply pooling (this reduces memory usage by collapsing sequence dimension)
         pooled_features = self._pool_features(hidden_states)
+
+        # Clear intermediate outputs to free memory
+        del outputs
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return pooled_features
 

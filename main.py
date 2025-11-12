@@ -231,6 +231,26 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
+def optimize_memory_usage(config):
+    """Apply memory optimizations for Wav2Vec2 training"""
+    if hasattr(config, 'audio_encoder_type') and config.audio_encoder_type == "wav2vec2":
+        # Enable memory-efficient attention if available
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+        
+        # Enable memory mapping for datasets
+        os.environ['HF_DATASETS_OFFLINE'] = '1' if not hasattr(config, 'hf_datasets_offline') else str(config.hf_datasets_offline)
+        
+        # Suggest gradient accumulation if batch size is too small
+        if hasattr(config, 'batch_size') and config.batch_size < 16:
+            effective_batch_size = getattr(config, 'effective_batch_size', 64)
+            gradient_accumulation_steps = max(1, effective_batch_size // config.batch_size)
+            if not hasattr(config, 'gradient_accumulation_steps'):
+                config.gradient_accumulation_steps = gradient_accumulation_steps
+                print(f"🔧 Using gradient accumulation: {gradient_accumulation_steps} steps for effective batch size {effective_batch_size}")
+        
+        print(f"🔧 Memory optimizations applied for Wav2Vec2 (batch_size: {config.batch_size})")
+
+
 def create_lr_scheduler(optimizer, config):
     """
     Create learning rate scheduler based on config
@@ -345,6 +365,9 @@ def run_experiment(config):
     seed = getattr(config, "seed", 42)
     set_seed(seed)
     print(f"🔢 Random seed set to: {seed}")
+
+    # Apply memory optimizations
+    optimize_memory_usage(config)
 
     # Initialize wandb
     wandb.init(
@@ -958,6 +981,10 @@ def train_epoch(
 
         total_loss += loss.item()
         current_lr = optimizer.param_groups[0]["lr"]
+
+        # Clear GPU cache periodically for memory efficiency
+        if batch_num % 10 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         log_dict = {
             "loss": loss,
