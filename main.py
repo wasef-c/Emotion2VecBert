@@ -245,9 +245,7 @@ def create_lr_scheduler(optimizer, config):
     scheduler_type = getattr(config, "lr_scheduler", "cosine").lower()
 
     if scheduler_type == "cosine":
-        scheduler = lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max= config.num_epochs
-        )
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
     elif scheduler_type == "step":
         step_size = getattr(config, "lr_scheduler_step_size", 10)
         gamma = getattr(config, "lr_scheduler_gamma", 0.1)
@@ -627,34 +625,66 @@ class SimpleEmotionDataset(Dataset):
         merged_dataset_map = {
             "IEMO": "cairocode/IEMO_Audio_Text_Merged",
             "MSPI": "cairocode/MSPI_Audio_Text_Merged",
-            "MSPP": "cairocode/MSPP_Audio_Text_Merged",
-            "CMUMOSEI": "cairocode/CMUMOSEI_Audio_Text_Merged",
-            "SAMSEMO": "cairocode/SAMSEMO_Audio_Text_Merged",
+            "MSPP": "cairocode/MSPP_WAV_Filtered_Ordered_v2",
+            "CMUMOSEI": "cairocode/cmu_mosei_wav",
+            "SAMSEMO": "cairocode/samsemo_audio",
         }
 
-        # Load HuggingFace merged dataset (has features, audio, and metadata)
-        if dataset_name not in merged_dataset_map:
-            raise ValueError(f"Unsupported dataset: {dataset_name}")
+        # Map dataset names to wav2vec2 precomputed feature datasets
+        # These datasets have pre-extracted Wav2Vec2 features (no raw audio needed)
+        wav2vec2_dataset_map = {
+            "IEMO": "cairocode/IEMO_Wav2Vec2_Text",
+            "MSPI": "cairocode/MSPI_Wav2Vec2_Text",
+            "MSPP": "cairocode/MSPP_Wav2Vec2_V1",
+            "CMUMOSEI": "cairocode/CMUMOSEI_Wav2Vec2_Text",
+            "SAMSEMO": "cairocode/SAMSEMO_Wav2Vec2_Text",
+        }
 
-        dataset_path = merged_dataset_map[dataset_name]
+        # Select appropriate dataset based on audio encoder type
+        # If using wav2vec2 with precomputed features, use wav2vec2 datasets
+        # Otherwise use merged datasets (with emotion2vec features or raw audio)
+        if (
+            self.audio_encoder_type == "wav2vec2"
+            and self.modality in ["audio", "both"]
+        ):
+            # Use precomputed wav2vec2 features
+            if dataset_name not in wav2vec2_dataset_map:
+                raise ValueError(f"Unsupported dataset for wav2vec2: {dataset_name}")
+            dataset_path = wav2vec2_dataset_map[dataset_name]
+            self.use_wav2vec2_precomputed = True
+            print(f"🎵 Using precomputed Wav2Vec2 features from: {dataset_path}")
+        else:
+            # Use merged datasets (emotion2vec features or raw audio)
+            if dataset_name not in merged_dataset_map:
+                raise ValueError(f"Unsupported dataset: {dataset_name}")
+            dataset_path = merged_dataset_map[dataset_name]
+            self.use_wav2vec2_precomputed = False
         self.hf_dataset = load_dataset(
             dataset_path, split=split, trust_remote_code=True
         )
 
-        print(f"📥 Loaded merged dataset: {dataset_path}")
+        print(f"📥 Loaded dataset: {dataset_path}")
         print(f"   Columns: {self.hf_dataset.column_names}")
 
-        # Note: Merged datasets contain both pre-extracted features AND raw audio
-        # - Use audio_encoder_type="preextracted" to use Emotion2Vec features
-        # - Use audio_encoder_type="wav2vec2"/"hubert"/etc to use raw audio
-        if self.modality in ["audio", "both"] and self.audio_encoder_type != "preextracted":
+        # Note: Dataset selection based on audio_encoder_type:
+        # - "preextracted" -> Use Emotion2Vec features from merged datasets
+        # - "wav2vec2" -> Use precomputed Wav2Vec2 features from wav2vec2 datasets
+        # - Other encoders (e.g., "hubert") -> Use raw audio from merged datasets
+        if (
+            self.modality in ["audio", "both"]
+            and self.audio_encoder_type != "preextracted"
+            and not self.use_wav2vec2_precomputed
+        ):
+            # Only check for raw audio if NOT using precomputed wav2vec2 features
             if "audio" not in self.hf_dataset.column_names:
                 print(f"⚠️ Warning: 'audio' column not found in {dataset_name}")
                 print(f"   Available columns: {self.hf_dataset.column_names}")
-                print(f"   Falling back to pre-extracted features")
+                print(f"   Falling back to pre-extracted Emotion2Vec features")
                 self.audio_encoder_type = "preextracted"
             else:
-                print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
+                print(
+                    f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})"
+                )
 
         # Process data
         self.data = []
@@ -662,7 +692,19 @@ class SimpleEmotionDataset(Dataset):
         for item in self.hf_dataset:
             # Extract audio features if needed for audio or multimodal mode
             if self.modality in ["audio", "both"]:
-                if self.audio_encoder_type == "preextracted":
+                if self.use_wav2vec2_precomputed:
+                    # Use pre-extracted Wav2Vec2 features
+                    features = torch.tensor(
+                        item["wav2vec2_features"], dtype=torch.float32
+                    )
+
+                    # Calculate sequence length for curriculum learning
+                    if len(features.shape) == 2:
+                        sequence_length = features.shape[0]  # [seq_len, feature_dim]
+                    else:
+                        sequence_length = 1  # Already pooled to [feature_dim]
+
+                elif self.audio_encoder_type == "preextracted":
                     # Use pre-extracted Emotion2Vec features
                     features = torch.tensor(
                         item["emotion2vec_features"][0]["feats"], dtype=torch.float32
@@ -674,7 +716,7 @@ class SimpleEmotionDataset(Dataset):
                     else:
                         sequence_length = 1  # Already pooled to [feature_dim]
                 else:
-                    # Use raw audio from merged dataset for wav2vec2/hubert/emotion2vec encoders
+                    # Use raw audio from merged dataset for hubert/emotion2vec encoders
                     if "audio" in item and item["audio"] is not None:
                         # Store raw audio data (will be processed by audio encoder)
                         # Audio format: {"array": [...], "sampling_rate": 16000, "path": "..."}
