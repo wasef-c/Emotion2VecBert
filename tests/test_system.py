@@ -15,7 +15,7 @@ print("="*60)
 print("\n1. Testing module imports...")
 try:
     from config import Config
-    from text_encoder import FrozenBERTEncoder
+    from Emotion2Vec_Text.text_encoder import FrozenBERTEncoder
     from fusion import get_fusion_module, CrossAttentionFusion
     from model import MultimodalEmotionClassifier, SimpleEmotionClassifier, create_model
     from functions import calculate_metrics, calculate_difficulty

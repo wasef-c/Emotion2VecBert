@@ -6,8 +6,8 @@ baseline: &baseline
   # Fixed settings (best from ablation)
   fusion_type: "cross_attention"
   fusion_hidden_dim: 1024
-  num_attention_heads: 16
-  train_dataset: "IEMO"
+  num_attention_heads: 8
+  train_dataset: "MSPP"
   evaluation_mode: "cross_corpus"
 
   # Model settings
@@ -15,14 +15,14 @@ baseline: &baseline
   audio_dim: 768
   text_model_name: "bert-base-uncased"
   freeze_text_encoder: true
-  text_max_length: 128
+  text_max_length: 512
   hidden_dim: 1024
   num_classes: 4
 
   # Default training settings (will be varied)
   num_epochs: 30
-  batch_size: 64
-  learning_rate: 1e-5
+  batch_size: 128
+  learning_rate: 5e-6
   weight_decay: 5e-6
   dropout: 0.1
 
@@ -35,7 +35,8 @@ baseline: &baseline
   use_difficulty_scaling: true
   use_speaker_disentanglement: true
 
-  post_curriculum_dropout: 0.2
+  post_curriculum_dropout: 0.1
+  lam_mult: 0.75  # Difficulty multiplier for class weights
 
   # Class weights
   class_weights:
@@ -51,221 +52,225 @@ baseline: &baseline
     2: [1.8, 2.2, 2.0]  # sad
     3: [1.8, 4.2, 4.0]  # anger
 
-  wandb_project: "HyperparameterGridSearch_IEMO"
-  # seeds: [42, 37, 645]
+  wandb_project: "HyperparameterGridSearch_MSPPv3"
+  seeds: [456, 37]
 
 experiments:
   # ============================================
   # BASELINE - No extras
   # ============================================
 
+  # - <<: *baseline
+  #   name: "Full System"
   - <<: *baseline
-    name: "Baseline_NoExtras"
-    use_curriculum_learning: false
+    name: "BASELINE"
     use_difficulty_scaling: false
     use_speaker_disentanglement: false
+    use_curriculum_learning: false
+  # # ============================================
+  # # Curriculum Epochs Grid Search
+  # # ============================================
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_0"
+  #   curriculum_epochs: 0
 
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_5"
+  #   curriculum_epochs: 5
+
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_10"
+  #   curriculum_epochs: 10
+
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_15"
+  #   curriculum_epochs: 15
+
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_20"
+  #   curriculum_epochs: 20
+
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_25"
+  #   curriculum_epochs: 25
+
+  # - <<: *baseline
+  #   name: "CurriculumEpochs_30"
+  #   num_epochs: 30
+  #   curriculum_epochs: 30
+
+  # # ============================================
+  # # Dropout Grid Search
+  # # ============================================
+
+  # - <<: *baseline
+  #   name: "Dropout_0.0"
+  #   dropout: 0.0
+
+  # - <<: *baseline
+  #   name: "Dropout_0.05"
+  #   dropout: 0.05
+
+  # - <<: *baseline
+  #   name: "Dropout_0.1"
+  #   dropout: 0.1
+
+  # - <<: *baseline
+  #   name: "Dropout_0.15"
+  #   dropout: 0.15
+
+  # - <<: *baseline
+  #   name: "Dropout_0.2"
+  #   dropout: 0.2
+
+  # - <<: *baseline
+  #   name: "Dropout_0.3"
+  #   dropout: 0.3
+
+
+
+  # # ============================================
+  # # Learning Rate Grid Search
+  # # ============================================
+
+  # - <<: *baseline
+  #   name: "LR_5e-6"
+  #   learning_rate: 5e-6
+
+  # - <<: *baseline
+  #   name: "LR_1e-6"
+  #   learning_rate: 1e-6
+
+  # - <<: *baseline
+  #   name: "LR_5e-7"
+  #   learning_rate: 5e-7
+
+  # - <<: *baseline
+  #   name: "LR_5e-5"
+  #   learning_rate: 5e-5
+
+  # - <<: *baseline
+  #   name: "LR_1e-5"
+  #   learning_rate: 1e-5
+
+  # # ============================================
+  # # Weight Decay Grid Search
+  # # ============================================
+
+  # - <<: *baseline
+  #   name: "WeightDecay_0"
+  #   weight_decay: 0.0
+
+  # - <<: *baseline
+  #   name: "WeightDecay_1e-6"
+  #   weight_decay: 1e-6
+
+  # - <<: *baseline
+  #   name: "WeightDecay_5e-6"
+  #   weight_decay: 5e-6
+
+  # - <<: *baseline
+  #   name: "WeightDecay_1e-5"
+  #   weight_decay: 1e-5
+
+  # - <<: *baseline
+  #   name: "WeightDecay_5e-5"
+  #   weight_decay: 5e-5
+
+
+  # # ============================================
+  # # Curriculum Pacing Grid Search
+  # # ============================================
+
+  # - <<: *baseline
+  #   name: "CurriculumPacing_Linear"
+  #   curriculum_pacing: "linear"
+
+  # - <<: *baseline
+  #   name: "CurriculumPacing_Sqrt"
+  #   curriculum_pacing: "sqrt"
+
+  # - <<: *baseline
+  #   name: "CurriculumPacing_Log"
+  #   curriculum_pacing: "log"
+
+  # # ============================================
+  # # Expected VAD Variants
+  # # Test different VAD prototypes
+  # # ============================================
+
+  # - <<: *baseline
+  #   name: "VAD_Variant1"
+  #   expected_vad:
+  #     0: [3.0, 3.0, 3.0]  # neutral - centered
+  #     1: [4.5, 4.0, 4.0]  # happy - higher valence
+  #     2: [1.5, 2.0, 2.0]  # sad - lower valence
+  #     3: [2.0, 4.5, 3.5]  # anger - higher arousal
+
+  # - <<: *baseline
+  #   name: "VAD_Variant2"
+  #   expected_vad:
+  #     0: [3.0, 2.0, 3.0]  # neutral - lower arousal
+  #     1: [4.0, 4.0, 3.5]  # happy - balanced
+  #     2: [1.8, 2.0, 2.2]  # sad - lower energy
+  #     3: [1.5, 4.5, 4.0]  # anger - very high arousal
+
+  # - <<: *baseline
+  #   name: "VAD_Variant3"
+  #   expected_vad:
+  #     0: [3.0, 2.5, 3.0]  # neutral - original
+  #     1: [4.2, 3.5, 3.8]  # happy - slightly lower arousal
+  #     2: [1.5, 2.5, 1.8]  # sad - lower valence/dominance
+  #     3: [2.0, 4.0, 3.5]  # anger - moderate
+
+  # - <<: *baseline
+  #   name: "VAD_Variant4"
+  #   expected_vad:
+  #     0: [3.2, 2.8, 3.5]  # neutral - slightly dominant
+  #     1: [4.6, 3.2, 4.2]  # happy - high dominance, calmer arousal
+  #     2: [1.8, 1.8, 1.5]  # sad - withdrawn / powerless
+  #     3: [2.5, 4.2, 4.5]  # anger - controlling, dominant anger
+
+  # - <<: *baseline
+  #   name: "VAD_Variant5"
+  #   expected_vad:
+  #     0: [2.8, 3.5, 2.8]  # neutral - alert but not dominant
+  #     1: [4.0, 4.8, 3.5]  # happy - excited / high arousal joy
+  #     2: [1.2, 3.0, 2.0]  # sad - agitated sadness
+  #     3: [1.8, 5.0, 3.0]  # anger - explosive, low control
+  # # ============================================
+  # # Lambda Multiplier (lam_mult) Grid Search
+  # # Controls influence of difficulty in class weights
   # ============================================
-  # Curriculum Epochs Grid Search
-  # ============================================
 
-  - <<: *baseline
-    name: "CurriculumEpochs_5"
-    curriculum_epochs: 5
+  # - <<: *baseline
+  #   name: "LamMult_0.0"
+  #   lam_mult: 0.0
 
-  - <<: *baseline
-    name: "CurriculumEpochs_10"
-    curriculum_epochs: 10
+  # - <<: *baseline
+  #   name: "LamMult_0.25"
+  #   lam_mult: 0.25
 
-  - <<: *baseline
-    name: "CurriculumEpochs_15"
-    curriculum_epochs: 15
+  # - <<: *baseline
+  #   name: "LamMult_0.5"
+  #   lam_mult: 0.5
 
-  - <<: *baseline
-    name: "CurriculumEpochs_20"
-    curriculum_epochs: 20
+  # - <<: *baseline
+  #   name: "LamMult_0.75"
+  #   lam_mult: 0.75
 
-  - <<: *baseline
-    name: "CurriculumEpochs_25"
-    curriculum_epochs: 25
+  # - <<: *baseline
+  #   name: "LamMult_1.0"
+  #   lam_mult: 1.0
 
-  # ============================================
-  # Dropout Grid Search
-  # ============================================
+  # - <<: *baseline
+  #   name: "LamMult_1.25"
+  #   lam_mult: 1.25
 
-  - <<: *baseline
-    name: "Dropout_0.0"
-    dropout: 0.0
-
-  - <<: *baseline
-    name: "Dropout_0.05"
-    dropout: 0.05
-
-  - <<: *baseline
-    name: "Dropout_0.1"
-    dropout: 0.1
-
-  - <<: *baseline
-    name: "Dropout_0.15"
-    dropout: 0.15
-
-  - <<: *baseline
-    name: "Dropout_0.2"
-    dropout: 0.2
-
-  - <<: *baseline
-    name: "Dropout_0.3"
-    dropout: 0.3
-
-  # ============================================
-  # PostCurriculum Dropout Grid Search
-  # ============================================
-
-  - <<: *baseline
-    name: "Post_Dropout_0.0"
-    post_curriculum_dropout: 0.0
-
-  - <<: *baseline
-    name: "Post_Dropout_0.05"
-    post_curriculum_dropout: 0.05
-
-  - <<: *baseline
-    name: "Post_Dropout_0.1"
-    post_curriculum_dropout: 0.1
-
-  - <<: *baseline
-    name: "Post_Dropout_0.15"
-    post_curriculum_dropout: 0.15
-
-  - <<: *baseline
-    name: "Post_Dropout_0.2"
-    post_curriculum_dropout: 0.2
-
-  - <<: *baseline
-    name: "Post_Dropout_0.3"
-    post_curriculum_dropout: 0.3
-
-  # ============================================
-  # Learning Rate Grid Search
-  # ============================================
-
-  - <<: *baseline
-    name: "LR_5e-6"
-    learning_rate: 5e-6
-
-  - <<: *baseline
-    name: "LR_1e-5"
-    learning_rate: 1e-5
-
-  - <<: *baseline
-    name: "LR_2e-5"
-    learning_rate: 2e-5
-
-  - <<: *baseline
-    name: "LR_5e-5"
-    learning_rate: 5e-5
-
-  - <<: *baseline
-    name: "LR_1e-4"
-    learning_rate: 1e-4
-
-  # ============================================
-  # Weight Decay Grid Search
-  # ============================================
-
-  - <<: *baseline
-    name: "WeightDecay_0"
-    weight_decay: 0.0
-
-  - <<: *baseline
-    name: "WeightDecay_1e-6"
-    weight_decay: 1e-6
-
-  - <<: *baseline
-    name: "WeightDecay_5e-6"
-    weight_decay: 5e-6
-
-  - <<: *baseline
-    name: "WeightDecay_1e-5"
-    weight_decay: 1e-5
-
-  - <<: *baseline
-    name: "WeightDecay_5e-5"
-    weight_decay: 5e-5
-
-  # ============================================
-  # Batch Size Grid Search
-  # ============================================
-
-  - <<: *baseline
-    name: "BatchSize_32"
-    batch_size: 32
-
-  - <<: *baseline
-    name: "BatchSize_64"
-    batch_size: 64
-
-  - <<: *baseline
-    name: "BatchSize_128"
-    batch_size: 128
-
-  # ============================================
-  # Curriculum Pacing Grid Search
-  # ============================================
-
-  - <<: *baseline
-    name: "CurriculumPacing_Linear"
-    curriculum_pacing: "linear"
-
-  - <<: *baseline
-    name: "CurriculumPacing_Sqrt"
-    curriculum_pacing: "sqrt"
-
-  - <<: *baseline
-    name: "CurriculumPacing_Log"
-    curriculum_pacing: "log"
-
-  # ============================================
-  # Expected VAD Variants
-  # Test different VAD prototypes
-  # ============================================
-
-  - <<: *baseline
-    name: "VAD_Variant1"
-    expected_vad:
-      0: [3.0, 3.0, 3.0]  # neutral - centered
-      1: [4.5, 4.0, 4.0]  # happy - higher valence
-      2: [1.5, 2.0, 2.0]  # sad - lower valence
-      3: [2.0, 4.5, 3.5]  # anger - higher arousal
-
-  - <<: *baseline
-    name: "VAD_Variant2"
-    expected_vad:
-      0: [3.0, 2.0, 3.0]  # neutral - lower arousal
-      1: [4.0, 4.0, 3.5]  # happy - balanced
-      2: [1.8, 2.0, 2.2]  # sad - lower energy
-      3: [1.5, 4.5, 4.0]  # anger - very high arousal
-
-  - <<: *baseline
-    name: "VAD_Variant3"
-    expected_vad:
-      0: [3.0, 2.5, 3.0]  # neutral - original
-      1: [4.2, 3.5, 3.8]  # happy - slightly lower arousal
-      2: [1.5, 2.5, 1.8]  # sad - lower valence/dominance
-      3: [2.0, 4.0, 3.5]  # anger - moderate
-
-  
+  # - <<: *baseline
+  #   name: "LamMult_1.5"
+  #   lam_mult: 1.5
 
   # ============================================
   # Extended Training
   # ============================================
-
-  - <<: *baseline
-    name: "ExtendedTraining_40epochs"
-    num_epochs: 40
-    curriculum_epochs: 20
-
-  - <<: *baseline
-    name: "ExtendedTraining_50epochs"
-    num_epochs: 50
-    curriculum_epochs: 25

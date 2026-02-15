@@ -84,6 +84,7 @@ def load_config_from_yaml(yaml_path, experiment_id=None):
         "lr_scheduler_gamma",
         "lr_scheduler_factor",
         "early_stopping_min_delta",
+        "lam_mult",
     ]
     int_params = [
         "batch_size",
@@ -265,9 +266,7 @@ def create_lr_scheduler(optimizer, config):
     scheduler_type = getattr(config, "lr_scheduler", "cosine").lower()
 
     if scheduler_type == "cosine":
-        scheduler = lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max= config.num_epochs
-        )
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
     elif scheduler_type == "step":
         step_size = getattr(config, "lr_scheduler_step_size", 10)
         gamma = getattr(config, "lr_scheduler_gamma", 0.1)
@@ -425,46 +424,29 @@ def run_experiment(config):
             )
             config.evaluation_mode = "cross_corpus"  # Override to cross_corpus
 
-    elif config.train_dataset == "MSPI":
-        train_dataset = SimpleEmotionDataset("MSPI", config=config, Train=True)
-        # For cross-corpus, we want to test on both other datasets
+    elif config.train_dataset in ("MSPI", "IEMO", "MSPP"):
+        train_dataset = SimpleEmotionDataset(config.train_dataset, config=config, Train=True)
+
         if config.evaluation_mode == "cross_corpus":
-            test_datasets = [
-                SimpleEmotionDataset("IEMO", config=config),
-                SimpleEmotionDataset("MSPP", config=config),
-                SimpleEmotionDataset("CMUMOSEI", config=config),
-                SimpleEmotionDataset("SAMSEMO", config=config),
-            ]
-            print(f"🚀 Training: MSPI -> [IEMO, MSPP, CMUMOSEI, SAMSEMO]")
+            # Build candidate test set names
+            all_candidates = ["IEMO", "MSPI", "MSPP", "CMUMOSEI", "SAMSEMO"]
+            test_dataset_names = [d for d in all_candidates if d != config.train_dataset]
+
+            # Filter out datasets without VAD for regression tasks
+            task_type = getattr(config, 'task_type', 'classification')
+            if task_type == "regression":
+                VAD_DATASETS = {"IEMO", "MSPI", "MSPP"}
+                removed = [d for d in test_dataset_names if d not in VAD_DATASETS]
+                test_dataset_names = [d for d in test_dataset_names if d in VAD_DATASETS]
+                if removed:
+                    print(f"📊 Regression task: Skipping {removed} (no VAD annotations)")
+
+            # Create test datasets only for the filtered names
+            test_datasets = [SimpleEmotionDataset(name, config=config) for name in test_dataset_names]
+            print(f"🚀 Training: {config.train_dataset} -> {test_dataset_names}")
         else:
-            test_dataset = SimpleEmotionDataset("IEMO", config=config)
-            print(f"🚀 Training: MSPI -> IEMO")
-    elif config.train_dataset == "IEMO":
-        train_dataset = SimpleEmotionDataset("IEMO", config=config, Train=True)
-        if config.evaluation_mode == "cross_corpus":
-            test_datasets = [
-                SimpleEmotionDataset("MSPI", config=config),
-                SimpleEmotionDataset("MSPP", config=config),
-                SimpleEmotionDataset("CMUMOSEI", config=config),
-                SimpleEmotionDataset("SAMSEMO", config=config),
-            ]
-            print(f"🚀 Training: IEMO -> [MSPI, MSPP, CMUMOSEI, SAMSEMO]")
-        else:
-            test_dataset = SimpleEmotionDataset("MSPI", config=config)
-            print(f"🚀 Training: IEMO -> MSPI")
-    elif config.train_dataset == "MSPP":
-        train_dataset = SimpleEmotionDataset("MSPP", config=config, Train=True)
-        if config.evaluation_mode == "cross_corpus":
-            test_datasets = [
-                SimpleEmotionDataset("IEMO", config=config),
-                SimpleEmotionDataset("MSPI", config=config),
-                SimpleEmotionDataset("CMUMOSEI", config=config),
-                SimpleEmotionDataset("SAMSEMO", config=config),
-            ]
-            print(f"🚀 Training: MSPP -> [IEMO, MSPI, CMUMOSEI, SAMSEMO]")
-        else:
-            test_dataset = SimpleEmotionDataset("IEMO", config=config)
-            print(f"🚀 Training: MSPP -> IEMO")
+            test_dataset = SimpleEmotionDataset("IEMO" if config.train_dataset != "IEMO" else "MSPI", config=config)
+            print(f"🚀 Training: {config.train_dataset} -> {test_dataset.dataset_name}")
     else:
         raise ValueError(f"Unknown train dataset: {config.train_dataset}")
 
@@ -514,26 +496,52 @@ def run_experiment(config):
         )
 
     elif config.evaluation_mode == "cross_corpus":
-        print(f"Validation Accuracy: {results['validation']['accuracy']:.4f}")
-        print(f"Validation UAR: {results['validation']['uar']:.4f}")
+        task_type = getattr(config, 'task_type', 'classification')
+        if task_type == "regression":
+            print(f"Validation MAE: {results['validation']['overall_mae']:.4f}")
+            print(f"Validation CCC: {results['validation']['overall_ccc']:.4f}")
 
-        for test_result in results["test_results"]:
-            dataset_name = test_result["dataset"]
-            acc = test_result["results"]["accuracy"]
-            uar = test_result["results"]["uar"]
-            print(f"{dataset_name} Test Accuracy: {acc:.4f}")
-            print(f"{dataset_name} Test UAR: {uar:.4f}")
+            for test_result in results["test_results"]:
+                dataset_name = test_result["dataset"]
+                print(f"{dataset_name} Test MAE: {test_result['results']['overall_mae']:.4f}")
+                print(f"{dataset_name} Test CCC: {test_result['results']['overall_ccc']:.4f}")
 
-        # Log final metrics
-        final_log = {
-            "final/validation_acc": results["validation"]["accuracy"],
-            "final/validation_uar": results["validation"]["uar"],
-        }
-        for test_result in results["test_results"]:
-            dataset_name = test_result["dataset"].lower()
-            final_log[f"final/{dataset_name}_acc"] = test_result["results"]["accuracy"]
-            final_log[f"final/{dataset_name}_uar"] = test_result["results"]["uar"]
-        wandb.log(final_log)
+            # Log final metrics
+            final_log = {
+                "final/validation_mae": results["validation"]["overall_mae"],
+                "final/validation_ccc": results["validation"]["overall_ccc"],
+            }
+            for test_result in results["test_results"]:
+                dataset_name = test_result["dataset"].lower()
+                final_log[f"final/{dataset_name}_mae"] = test_result["results"]["overall_mae"]
+                final_log[f"final/{dataset_name}_ccc"] = test_result["results"]["overall_ccc"]
+            wandb.log(final_log)
+
+            # Save CCC plot for cross-corpus results
+            ccc_plot = create_ccc_plot(results)
+            if wandb.run:
+                wandb.log({"final/ccc_cross_corpus": ccc_plot})
+        else:
+            print(f"Validation Accuracy: {results['validation']['accuracy']:.4f}")
+            print(f"Validation UAR: {results['validation']['uar']:.4f}")
+
+            for test_result in results["test_results"]:
+                dataset_name = test_result["dataset"]
+                acc = test_result["results"]["accuracy"]
+                uar = test_result["results"]["uar"]
+                print(f"{dataset_name} Test Accuracy: {acc:.4f}")
+                print(f"{dataset_name} Test UAR: {uar:.4f}")
+
+            # Log final metrics
+            final_log = {
+                "final/validation_acc": results["validation"]["accuracy"],
+                "final/validation_uar": results["validation"]["uar"],
+            }
+            for test_result in results["test_results"]:
+                dataset_name = test_result["dataset"].lower()
+                final_log[f"final/{dataset_name}_acc"] = test_result["results"]["accuracy"]
+                final_log[f"final/{dataset_name}_uar"] = test_result["results"]["uar"]
+            wandb.log(final_log)
 
     elif config.evaluation_mode == "both":
         print("LOSO Results:")
@@ -621,10 +629,38 @@ class ConcatenatedDataset(Dataset):
             "sequence_length": item["sequence_length"],
         }
 
+        # Add VAD fields if they exist (needed for regression tasks)
+        # Handle valence field names
+        if "valence" in item:
+            result["valence"] = item["valence"]
+        elif "consensus_valence" in item:
+            result["valence"] = item["consensus_valence"]
+        elif "EmoVal" in item:
+            result["valence"] = item["EmoVal"]
+
+        # Handle arousal field names
+        if "arousal" in item:
+            result["arousal"] = item["arousal"]
+        elif "consensus_arousal" in item:
+            result["arousal"] = item["consensus_arousal"]
+        elif "EmoAct" in item:
+            result["arousal"] = item["EmoAct"]
+
+        # Handle dominance field names
+        if "domination" in item:
+            result["domination"] = item["domination"]
+        elif "consensus_dominance" in item:
+            result["domination"] = item["consensus_dominance"]
+        elif "EmoDom" in item:
+            result["domination"] = item["EmoDom"]
+
         # Add modality-specific data
         modality = self.datasets[0].modality  # All datasets share same modality
         if modality in ["audio", "both"]:
-            result["features"] = item["features"]
+            features = item["features"]
+            if not isinstance(features, torch.Tensor):
+                features = torch.tensor(features, dtype=torch.float32)
+            result["features"] = features
 
         if modality in ["text", "both"]:
             result["transcript"] = item["transcript"]
@@ -650,40 +686,147 @@ class SimpleEmotionDataset(Dataset):
         merged_dataset_map = {
             "IEMO": "cairocode/IEMO_Audio_Text_Merged",
             "MSPI": "cairocode/MSPI_Audio_Text_Merged",
-            "MSPP": "cairocode/MSPP_WAV_Filtered_Ordered_v2",
-            "CMUMOSEI": "cairocode/cmu_mosei_wav",
-            "SAMSEMO": "cairocode/samsemo-audio",
+            "MSPP": "cairocode/MSPP_Audio_Text_Merged",
+            "CMUMOSEI": "cairocode/CMUMOSEI_Emotion2Vec_PrecomputedEncodings",
+            "SAMSEMO": "cairocode/SAMSEMO_Emotion2Vec_PrecomputedEncodings",
         }
-        # Load HuggingFace merged dataset (has features, audio, and metadata)
-        if dataset_name not in merged_dataset_map:
-            raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-        dataset_path = merged_dataset_map[dataset_name]
+        # Map dataset names to wav2vec2 precomputed feature datasets
+        # These datasets have pre-extracted Wav2Vec2 features (no raw audio needed)
+        wav2vec2_dataset_map = {
+            "IEMO": "cairocode/IEMO_Wav2Vec2_Text",
+            "MSPI": "cairocode/MSPI_Wav2Vec2_Text",
+            "MSPP": "cairocode/MSPP_Wav2Vec2_V1",
+            "CMUMOSEI": "cairocode/CMUMOSEI_Wav2Vec2_Text",
+            "SAMSEMO": "cairocode/SAMSEMO_Wav2Vec2_Text",
+        }
+
+        # Select appropriate dataset based on audio encoder type
+        # If using wav2vec2 with precomputed features, use wav2vec2 datasets
+        # Otherwise use merged datasets (with emotion2vec features or raw audio)
+        if self.audio_encoder_type == "wav2vec2" and self.modality in ["audio", "both"]:
+            # Use precomputed wav2vec2 features
+            if dataset_name not in wav2vec2_dataset_map:
+                raise ValueError(f"Unsupported dataset for wav2vec2: {dataset_name}")
+            dataset_path = wav2vec2_dataset_map[dataset_name]
+            self.use_wav2vec2_precomputed = True
+            print(f"🎵 Using precomputed Wav2Vec2 features from: {dataset_path}")
+        else:
+            # Use merged datasets (emotion2vec features or raw audio)
+            if dataset_name not in merged_dataset_map:
+                raise ValueError(f"Unsupported dataset: {dataset_name}")
+            dataset_path = merged_dataset_map[dataset_name]
+            self.use_wav2vec2_precomputed = False
         self.hf_dataset = load_dataset(
             dataset_path, split=split, trust_remote_code=True
         )
 
-        print(f"📥 Loaded merged dataset: {dataset_path}")
+        # Filter wav2vec2 datasets to only include labels 0-3
+        if self.use_wav2vec2_precomputed:
+            original_size = len(self.hf_dataset)
+            self.hf_dataset = self.hf_dataset.filter(
+                lambda x: x["label"] in [0, 1, 2, 3]
+            )
+            filtered_size = len(self.hf_dataset)
+            if filtered_size < original_size:
+                print(
+                    f"🔍 Filtered wav2vec2 dataset: {original_size} → {filtered_size} samples (removed {original_size - filtered_size} samples with labels outside 0-3)"
+                )
+
+        print(f"📥 Loaded dataset: {dataset_path}")
         print(f"   Columns: {self.hf_dataset.column_names}")
 
-        # Note: Merged datasets contain both pre-extracted features AND raw audio
-        # - Use audio_encoder_type="preextracted" to use Emotion2Vec features
-        # - Use audio_encoder_type="wav2vec2"/"hubert"/etc to use raw audio
-        if self.modality in ["audio", "both"] and self.audio_encoder_type != "preextracted":
+        # Note: Dataset selection based on audio_encoder_type:
+        # - "preextracted" -> Use Emotion2Vec features from merged datasets
+        # - "wav2vec2" -> Use precomputed Wav2Vec2 features from wav2vec2 datasets
+        # - Other encoders (e.g., "hubert") -> Use raw audio from merged datasets
+        if (
+            self.modality in ["audio", "both"]
+            and self.audio_encoder_type != "preextracted"
+            and not self.use_wav2vec2_precomputed
+        ):
+            # Only check for raw audio if NOT using precomputed wav2vec2 features
             if "audio" not in self.hf_dataset.column_names:
                 print(f"⚠️ Warning: 'audio' column not found in {dataset_name}")
                 print(f"   Available columns: {self.hf_dataset.column_names}")
-                print(f"   Falling back to pre-extracted features")
+                print(f"   Falling back to pre-extracted Emotion2Vec features")
                 self.audio_encoder_type = "preextracted"
             else:
-                print(f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})")
+                print(
+                    f"🎵 Using raw audio from 'audio' column (encoder: {self.audio_encoder_type})"
+                )
 
-        # Ultra-lazy loading: don't iterate through dataset at all
-        print(f"🔍 DEBUG: Dataset length: {len(self.hf_dataset)}")
-        
-        # Create minimal dummy metadata for compatibility
-        self.metadata = [{"hf_index": i} for i in range(len(self.hf_dataset))]
-        self.data = self.metadata
+        # Process data
+        self.data = []
+        skipped_vad_count = 0
+
+        for item in self.hf_dataset:
+            # Extract audio features if needed for audio or multimodal mode
+            if self.modality in ["audio", "both"]:
+                if self.use_wav2vec2_precomputed:
+                    # Use pre-extracted Wav2Vec2 features
+                    wav2vec_data = item.get("wav2vec2_features")
+
+                    if wav2vec_data is None:
+                        print("NO WAV2vec DATA IN:  ", dataset_path)
+                        continue
+
+                    # Extract raw feature data (defer tensor conversion to __getitem__)
+                    if isinstance(wav2vec_data, dict) and "feats" in wav2vec_data:
+                        features = wav2vec_data["feats"]
+                    elif (
+                        isinstance(wav2vec_data, list)
+                        and len(wav2vec_data) > 0
+                        and isinstance(wav2vec_data[0], dict)
+                    ):
+                        features = wav2vec_data[0]["feats"]
+                    else:
+                        features = wav2vec_data
+
+                    # Calculate sequence length from raw data
+                    if isinstance(features, list) and len(features) > 0 and isinstance(features[0], (list, tuple)):
+                        sequence_length = len(features)
+                    else:
+                        sequence_length = 1
+
+                elif self.audio_encoder_type == "preextracted":
+                    # Use pre-extracted Emotion2Vec features
+                    if (
+                        "emotion2vec_features" not in item
+                        or item["emotion2vec_features"] is None
+                    ):
+                        print(
+                            f"⚠️ Warning: No emotion2vec features found for {self.dataset_name}, skipping item"
+                        )
+                        continue
+
+                    # Store raw feature data (defer tensor conversion to __getitem__)
+                    features = item["emotion2vec_features"][0]["feats"]
+
+                    # Calculate sequence length from raw data
+                    if isinstance(features, list) and len(features) > 0 and isinstance(features[0], (list, tuple)):
+                        sequence_length = len(features)
+                    else:
+                        sequence_length = 1
+                else:
+                    # Use raw audio from merged dataset for hubert/emotion2vec encoders
+                    if "audio" in item and item["audio"] is not None:
+                        # Store raw audio data (will be processed by audio encoder)
+                        # Audio format: {"array": [...], "sampling_rate": 16000, "path": "..."}
+                        features = item["audio"]
+                        sequence_length = 1  # Raw audio
+                    else:
+                        print(f"⚠️ Warning: No audio data found for item, skipping")
+                        continue
+            else:
+                # Text-only mode: no audio features needed
+                features = 1
+                sequence_length = 1
+
+            # Extract transcript for text or multimodal mode
+            if self.modality in ["text", "both"]:
+                # 1. Try to get the 'transcript'
+                transcript = item.get("transcript")
 
         print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
         print(f"   Modality: {self.modality}")
@@ -736,73 +879,87 @@ class SimpleEmotionDataset(Dataset):
                     speaker_id = item.get("SpkrID", 1)
                     session = (speaker_id - 1) // 500 + 1
                 else:
-                    speaker_id = 1
-                    session = 1
-                
-                # Calculate difficulty
-                valence = item.get("valence", item.get("EmoVal", 3.0))
-                arousal = item.get("arousal", item.get("EmoAct", 3.0))  
-                domination = item.get("domination", item.get("EmoDom", 3.0))
-                
-                # Fix NaN values
-                def fix_vad(value):
-                    if value is None or (isinstance(value, float) and math.isnan(value)):
-                        return 3.0
-                    return value
-                    
-                valence = fix_vad(valence)
-                arousal = fix_vad(arousal)
-                domination = fix_vad(domination)
-                
-                item_with_vad = {
-                    "label": label,
-                    "valence": valence,
-                    "arousal": arousal,
-                    "domination": domination,
-                }
-                difficulty = calculate_difficulty(
-                    item_with_vad,
-                    self.config.expected_vad,
-                    self.config.difficulty_method,
-                    dataset=self.dataset_name,
-                )
-                curriculum_order = item.get("curriculum_order", 0.5)
-                
-                # Extract text if needed
-                transcript = None
-                if self.modality in ["text", "both"]:
-                    transcript = item.get("transcript", item.get("text", "[EMPTY]"))
-                
-                # Extract/compute audio features if needed
-                features = None
-                if self.modality in ["audio", "both"]:
-                    if self.audio_encoder_type == "preextracted":
-                        features = torch.tensor(
-                            item["emotion2vec_features"][0]["feats"], dtype=torch.float32
-                        )
-                    elif encoder is not None and "audio" in item and item["audio"] is not None:
-                        # Use encoder to extract features with aggressive memory management
-                        audio_data = item["audio"]
-                        if isinstance(audio_data, dict) and "array" in audio_data:
-                            with torch.no_grad():
-                                # Truncate audio to 30 seconds max to avoid memory explosion
-                                max_samples = 30 * audio_data.get("sampling_rate", 16000)
-                                audio_array = audio_data["array"]
-                                if len(audio_array) > max_samples:
-                                    audio_array = audio_array[:max_samples]
-                                
-                                audio_tensor = torch.tensor([audio_array], dtype=torch.float32).to(device)
-                                features = encoder(audio_tensor).squeeze(0).cpu()
-                                
-                                # Immediately delete tensors to free memory
-                                del audio_tensor, audio_array
-                        else:
-                            features = torch.zeros(768)
-                    else:
-                        features = torch.zeros(768)
-                
-                # Store complete item data
-                item_data = {
+                    # Fallback for other datasets
+                    try:
+                        speaker_id = item["speaker_id"]
+                    except:
+                        speaker_id = item.get("speakerID", item.get("SpkrID", 1))
+                    session = (speaker_id - 1) // 2 + 1
+            else:
+                speaker_id = -1  # Use -1 instead of None for test datasets
+                session = -1  # Use -1 instead of None for test datasets
+
+            label = item["label"]
+
+            # Get curriculum order from dataset
+            curriculum_order = item.get("curriculum_order", 0.5)
+            # Handle None values (not just missing keys)
+            if curriculum_order is None:
+                curriculum_order = 0.5
+
+            # Get VAD values for difficulty calculation
+            valence = item.get("valence", item.get("consensus_valence", item.get("EmoVal", None)))
+            arousal = item.get("arousal", item.get("consensus_arousal", item.get("EmoAct", None)))
+            domination = item.get(
+                "domination", item.get("consensus_dominance", item.get("EmoDom", None))
+            )
+
+            # Check for regression task - VAD values are required, skip samples with NaN
+            task_type = getattr(config, 'task_type', 'classification')
+            if task_type == "regression":
+                if valence is None or (isinstance(valence, float) and math.isnan(valence)):
+                    skipped_vad_count += 1
+                    continue  # Skip sample with missing/NaN valence
+                if arousal is None or (isinstance(arousal, float) and math.isnan(arousal)):
+                    skipped_vad_count += 1
+                    continue  # Skip sample with missing/NaN arousal
+                if domination is None or (isinstance(domination, float) and math.isnan(domination)):
+                    skipped_vad_count += 1
+                    continue  # Skip sample with missing/NaN dominance
+
+            # Normalize VAD values to [0, 1] range based on dataset scale
+            if valence is not None:
+                if self.dataset_name == "MSPP":
+                    valence = (valence - 1) / 6  # 1-7 scale → 0-1
+                else:  # IEMO, MSPI use 1-5 scale
+                    valence = (valence - 1) / 4  # 1-5 scale → 0-1
+
+            if arousal is not None:
+                if self.dataset_name == "MSPP":
+                    arousal = (arousal - 1) / 6
+                else:
+                    arousal = (arousal - 1) / 4
+
+            if domination is not None:
+                if self.dataset_name == "MSPP":
+                    domination = (domination - 1) / 6
+                else:
+                    domination = (domination - 1) / 4
+
+            # For classification, use default midpoint if missing (for difficulty calculation only)
+            if valence is None:
+                valence = 0.5
+            if arousal is None:
+                arousal = 0.5
+            if domination is None:
+                domination = 0.5
+            item_with_vad = {
+                "label": label,
+                "valence": valence,
+                "arousal": arousal,
+                "domination": domination,
+            }
+            difficulty = calculate_difficulty(
+                item_with_vad,
+                config.expected_vad,
+                config.difficulty_method,
+                dataset=dataset_name,
+            )
+
+            self.data.append(
+                {
+                    "features": features,
+                    "transcript": transcript,
                     "label": label,
                     "speaker_id": speaker_id,
                     "session": session,
@@ -813,45 +970,21 @@ class SimpleEmotionDataset(Dataset):
                     "features": features,
                     "transcript": transcript,
                 }
-                
-                new_data.append(item_data)
-                
-            except Exception as e:
-                print(f"   Warning: Failed to process sample {i}: {e}")
-                # Add dummy data for failed samples
-                new_data.append({
-                    "label": 0,
-                    "speaker_id": 1,
-                    "session": 1,
-                    "dataset": self.dataset_name,
-                    "difficulty": 0.5,
-                    "curriculum_order": 0.5,
-                    "sequence_length": 1,
-                    "features": torch.zeros(768),
-                    "transcript": "[EMPTY]",
-                })
-            
-            # Clear memory very frequently
-            if i % 10 == 0:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                # Force Python garbage collection
-                import gc
-                gc.collect()
-        
-        # Replace data with precomputed version
-        self.data = new_data
-        
-        # Clear the encoder and HF dataset to free massive amounts of memory
-        if encoder is not None:
-            del encoder
-        del self.hf_dataset  # This should free the raw audio data
-        self.hf_dataset = None
-        
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
-        print(f"   Cleared raw audio data from memory")
+            )
+
+        print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
+        print(f"   Modality: {self.modality}")
+        if skipped_vad_count > 0:
+            print(f"   ⚠️  Skipped {skipped_vad_count} samples with missing/NaN VAD values (regression mode)")
+
+        # Print session distribution for debugging
+        session_counts = defaultdict(int)
+        for item in self.data:
+            session_counts[item["session"]] += 1
+
+        print(f"📊 {dataset_name} Sessions:")
+        for session_id in sorted(session_counts.keys()):
+            print(f"   Session {session_id}: {session_counts[session_id]} samples")
 
     def __len__(self):
         return len(self.data)
@@ -870,12 +1003,54 @@ class SimpleEmotionDataset(Dataset):
             "sequence_length": item["sequence_length"],
         }
 
-        # Add modality-specific data (already precomputed)
-        if self.modality in ["audio", "both"] and item["features"] is not None:
-            result["features"] = item["features"]
+        # Add VAD fields if they exist (needed for regression tasks)
+        # Handle valence field names
+        if "valence" in item:
+            result["valence"] = item["valence"]
+        elif "consensus_valence" in item:
+            result["valence"] = item["consensus_valence"]
+        elif "EmoVal" in item:
+            result["valence"] = item["EmoVal"]
+
+        # Handle arousal field names
+        if "arousal" in item:
+            result["arousal"] = item["arousal"]
+        elif "consensus_arousal" in item:
+            result["arousal"] = item["consensus_arousal"]
+        elif "EmoAct" in item:
+            result["arousal"] = item["EmoAct"]
+
+        # Handle dominance field names
+        if "domination" in item:
+            result["domination"] = item["domination"]
+        elif "consensus_dominance" in item:
+            result["domination"] = item["consensus_dominance"]
+        elif "EmoDom" in item:
+            result["domination"] = item["EmoDom"]
+
+        # Add modality-specific data
+        if self.modality in ["audio", "both"]:
+            features = item["features"]
+            if not isinstance(features, torch.Tensor):
+                features = torch.tensor(features, dtype=torch.float32)
+            result["features"] = features
 
         if self.modality in ["text", "both"] and item["transcript"] is not None:
             result["transcript"] = item["transcript"]
+
+        # Debug: Check for None values before returning
+        for key, value in result.items():
+            if value is None:
+                print(f"\n❌ FOUND None VALUE in dataset item!")
+                print(f"   Dataset: {self.dataset_name}")
+                print(f"   Index: {idx}")
+                print(f"   Field: {key}")
+                print(f"   Item data: {item}")
+                print(f"   Modality: {self.modality}")
+                print(f"   Audio encoder type: {self.audio_encoder_type}")
+                raise ValueError(
+                    f"None value in field '{key}' for dataset {self.dataset_name} at index {idx}"
+                )
 
         return result
 
@@ -917,10 +1092,21 @@ def train_epoch(
 
     modality = getattr(config, "modality", "audio")
     text_max_length = getattr(config, "text_max_length", 128)
+    task_type = getattr(config, "task_type", "classification")
+
+    # For regression, we'll track VAD predictions and targets
+    vad_predictions = []
+    vad_targets = []
 
     for batch in data_loader:
         batch_labels = batch["label"].to(device)
         difficulties = batch["difficulty"].to(device)
+
+        # For regression task, get VAD target values
+        if task_type == "regression":
+            if "vad" not in batch:
+                raise ValueError("VAD values not found in batch. Ensure dataset has VAD annotations (valence, arousal, dominance).")
+            batch_vad = batch["vad"].to(device)  # Shape: (batch_size, 3)
 
         optimizer.zero_grad()
 
@@ -1015,27 +1201,24 @@ def train_epoch(
         else:
             raise ValueError(f"Unknown modality: {modality}")
 
-        # Calculate loss
-        loss_per_sample = criterion(logits, batch_labels)  # reduction='none'
-        loss = loss_per_sample.mean()
+        # Calculate loss based on task type
+        if task_type == "regression":
+            # For VAD regression
+            loss = criterion(logits, batch_vad)  # logits are VAD predictions
+            # Track predictions and targets for VAD metrics
+            vad_predictions.append(logits.detach().cpu().numpy())
+            vad_targets.append(batch_vad.cpu().numpy())
+        else:
+            # For classification
+            loss_per_sample = criterion(logits, batch_labels)  # reduction='none'
+            loss = loss_per_sample.mean()
+            # Track predictions for metrics
+            preds = torch.argmax(logits, dim=-1).cpu().numpy()
+            predictions.extend(preds)
+            labels.extend(batch_labels.cpu().numpy())
 
-        # Track predictions for metrics
-        preds = torch.argmax(logits, dim=-1).cpu().numpy()
-        predictions.extend(preds)
-        labels.extend(batch_labels.cpu().numpy())
-
-        # # Debug logging for first few batches
-        # if batch_num % print_every_n_batches == 0:
-        #     with torch.no_grad():
-        #         probs = torch.softmax(logits, dim=-1)
-        #         print(f"\n      Batch {batch_num}:")
-        #         print(f"        Logits stats: min={logits.min().item():.3f}, max={logits.max().item():.3f}, mean={logits.mean().item():.3f}")
-        #         print(f"        Probs stats: min={probs.min().item():.3f}, max={probs.max().item():.3f}")
-        #         print(f"        Predicted labels: {preds[:8]}")  # First 8 predictions
-        #         print(f"        True labels:      {batch_labels[:8].cpu().numpy()}")
-        #         print(f"        Label distribution in batch: {np.bincount(batch_labels.cpu().numpy(), minlength=4)}")
-        #         print(f"        Prediction distribution: {np.bincount(preds, minlength=4)}")
-        #         print(f"        Loss: {loss.item():.4f}")
+        if batch_num % print_every_n_batches == 0:
+            print(f"      Batch {batch_num}/{len(data_loader)}: loss={loss.item():.4f}", flush=True)
 
         loss.backward()
         optimizer.step()
@@ -1060,10 +1243,21 @@ def train_epoch(
     # Safety check for empty dataloader
     if len(data_loader) == 0:
         print("   Warning: Empty dataloader, returning zero loss and metrics")
-        return 0.0, {"accuracy": 0.0, "uar": 0.0, "f1_weighted": 0.0}
+        if task_type == "regression":
+            return 0.0, {"overall_mae": 0.0, "overall_rmse": 0.0, "overall_corr": 0.0}
+        else:
+            return 0.0, {"accuracy": 0.0, "uar": 0.0, "f1_weighted": 0.0}
 
     avg_loss = total_loss / len(data_loader)
-    metrics = calculate_metrics(predictions, labels)
+
+    # Calculate appropriate metrics based on task type
+    if task_type == "regression":
+        # Concatenate all VAD predictions and targets
+        vad_predictions = np.concatenate(vad_predictions, axis=0)
+        vad_targets = np.concatenate(vad_targets, axis=0)
+        metrics = calculate_vad_metrics(vad_predictions, vad_targets)
+    else:
+        metrics = calculate_metrics(predictions, labels)
 
     # # Print epoch summary
     # print(f"\n      Epoch Summary:")
@@ -1105,12 +1299,46 @@ def evaluate_model_multimodal(
     labels = []
     difficulties = []
 
+    # For regression task
+    vad_predictions = []
+    vad_targets = []
+
     modality = getattr(config, "modality", "audio")
     text_max_length = getattr(config, "text_max_length", 128)
+    task_type = getattr(config, "task_type", "classification")
 
     with torch.no_grad():
-        for batch in data_loader:
+        for batch_idx, batch in enumerate(data_loader):
+            # Debug: Check for None values in batch
+            for key, value in batch.items():
+                if value is None:
+                    print(f"❌ FOUND None VALUE in batch {batch_idx}")
+                    print(f"   Key: {key}")
+                    print(f"   Dataset: {batch.get('dataset', 'unknown')}")
+                    print(f"   Full batch keys: {batch.keys()}")
+                    print(
+                        f"   Batch size: {len(batch['label']) if 'label' in batch and batch['label'] is not None else 'N/A'}"
+                    )
+                    raise ValueError(f"None value found in batch field '{key}'")
+                elif isinstance(value, (list, tuple)):
+                    # Check if any element in list/tuple is None
+                    if any(v is None for v in value):
+                        print(f"❌ FOUND None VALUE in batch {batch_idx}")
+                        print(f"   Key: {key} (contains None in list)")
+                        print(f"   Dataset: {batch.get('dataset', 'unknown')}")
+                        none_indices = [i for i, v in enumerate(value) if v is None]
+                        print(f"   None at indices: {none_indices}")
+                        raise ValueError(
+                            f"None value found in batch field '{key}' at indices {none_indices}"
+                        )
+
             batch_labels = batch["label"].to(device)
+
+            # For regression task, get VAD target values
+            if task_type == "regression":
+                if "vad" not in batch:
+                    raise ValueError("VAD values not found in batch for regression task.")
+                batch_vad = batch["vad"].to(device)
 
             # Forward pass based on modality
             if modality == "audio":
@@ -1189,13 +1417,20 @@ def evaluate_model_multimodal(
                 else:
                     raise ValueError("Text encoder not available for multimodal mode")
 
-            loss = criterion(logits, batch_labels)
-            total_loss += loss.mean().item()
-
-            # Get predictions
-            preds = torch.argmax(logits, dim=-1).cpu().numpy()
-            predictions.extend(preds)
-            labels.extend(batch_labels.cpu().numpy())
+            # Calculate loss and track predictions based on task type
+            if task_type == "regression":
+                loss = criterion(logits, batch_vad)
+                total_loss += loss.item()
+                # Track VAD predictions and targets
+                vad_predictions.append(logits.cpu().numpy())
+                vad_targets.append(batch_vad.cpu().numpy())
+            else:
+                loss = criterion(logits, batch_labels)
+                total_loss += loss.mean().item()
+                # Get predictions
+                preds = torch.argmax(logits, dim=-1).cpu().numpy()
+                predictions.extend(preds)
+                labels.extend(batch_labels.cpu().numpy())
 
             # Collect difficulties if requested
             if return_difficulties:
@@ -1205,29 +1440,45 @@ def evaluate_model_multimodal(
                 difficulties.extend(batch_difficulties)
 
     avg_loss = total_loss / len(data_loader)
-    metrics = calculate_metrics(predictions, labels)
 
-    results = {
-        "loss": avg_loss,
-        "predictions": predictions,
-        "labels": labels,
-        "difficulties": difficulties if return_difficulties else None,
-        **metrics,
-    }
+    # Calculate metrics based on task type
+    if task_type == "regression":
+        # Concatenate all VAD predictions and targets
+        vad_predictions = np.concatenate(vad_predictions, axis=0)
+        vad_targets = np.concatenate(vad_targets, axis=0)
+        metrics = calculate_vad_metrics(vad_predictions, vad_targets)
 
-    # Create plots if requested
-    if create_plots and plot_title:
-        # Confusion matrix
-        confusion_matrix_plot = create_confusion_matrix(predictions, labels, plot_title)
-        results["confusion_matrix"] = confusion_matrix_plot
+        results = {
+            "loss": avg_loss,
+            "vad_predictions": vad_predictions,
+            "vad_targets": vad_targets,
+            "difficulties": difficulties if return_difficulties else None,
+            **metrics,
+        }
+    else:
+        metrics = calculate_metrics(predictions, labels)
 
-        # Difficulty vs accuracy plot (only if we have difficulties)
-        if return_difficulties and len(difficulties) > 0:
-            difficulty_plot, difficulty_analysis = create_difficulty_accuracy_plot(
-                predictions, labels, difficulties, plot_title
-            )
-            results["difficulty_plot"] = difficulty_plot
-            results["difficulty_analysis"] = difficulty_analysis
+        results = {
+            "loss": avg_loss,
+            "predictions": predictions,
+            "labels": labels,
+            "difficulties": difficulties if return_difficulties else None,
+            **metrics,
+        }
+
+        # Create plots if requested
+        if create_plots and plot_title:
+            # Confusion matrix
+            confusion_matrix_plot = create_confusion_matrix(predictions, labels, plot_title)
+            results["confusion_matrix"] = confusion_matrix_plot
+
+            # Difficulty vs accuracy plot (only if we have difficulties)
+            if return_difficulties and len(difficulties) > 0:
+                difficulty_plot, difficulty_analysis = create_difficulty_accuracy_plot(
+                    predictions, labels, difficulties, plot_title
+                )
+                results["difficulty_plot"] = difficulty_plot
+                results["difficulty_analysis"] = difficulty_analysis
 
     return results
 
@@ -1606,7 +1857,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     # Create datasets
     train_subset = Subset(train_dataset, train_indices)
     val_subset = Subset(train_dataset, val_indices)
-    val_loader = DataLoader(val_subset, batch_size=config.batch_size, shuffle=False)
+    val_loader = DataLoader(val_subset, batch_size=config.batch_size, shuffle=False, collate_fn=vad_collate_fn)
 
     # Create test loaders for cross-corpus datasets
     test_loaders = []
@@ -1614,13 +1865,13 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     if isinstance(test_datasets, list):
         for test_dataset in test_datasets:
             test_loader = DataLoader(
-                test_dataset, batch_size=config.batch_size, shuffle=False
+                test_dataset, batch_size=config.batch_size, shuffle=False, collate_fn=vad_collate_fn
             )
             test_loaders.append(test_loader)
             test_names.append(test_dataset.dataset_name)
     else:
         test_loader = DataLoader(
-            test_datasets, batch_size=config.batch_size, shuffle=False
+            test_datasets, batch_size=config.batch_size, shuffle=False, collate_fn=vad_collate_fn
         )
         test_loaders = [test_loader]
         test_names = [test_datasets.dataset_name]
@@ -1670,6 +1921,9 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
 
     class_weights = []
     freq_weights = []
+    lam_mult = getattr(config, "lam_mult", 0.75)  # Default to 0.75 if not set
+    print(f"📊 Using lam_mult = {lam_mult} for class weight calculation")
+
     for i in range(4):
         freq_ratio = class_counts[i] / total_samples
         freq_weight = (1.0 / freq_ratio) / 4
@@ -1678,7 +1932,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
             if class_difficulties[i]
             else 1.0
         )
-        class_weights.append(freq_weight + 0.75 * avg_difficulty)
+        class_weights.append(freq_weight + lam_mult * avg_difficulty)
         freq_weights.append(freq_weight + 1)
         print(f"########### LABEL {i} ###############")
         print(
@@ -1692,13 +1946,22 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
 
     class_weights = torch.tensor(class_weights).to(device)
 
-    if config.use_difficulty_scaling:
-        print(f"📊 Class weights (freq × difficulty): {class_weights}")
-        criterion = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
+    # Create appropriate loss function based on task type
+    task_type = getattr(config, 'task_type', 'classification')
+    if task_type == 'regression':
+        # VAD regression loss
+        vad_loss_weights = getattr(config, 'vad_loss_weights', [1.0, 1.0, 1.0])
+        print(f"📊 VAD Regression - Loss weights (V, A, D): {vad_loss_weights}")
+        criterion = VADRegressionLoss(weights=vad_loss_weights)
     else:
-        print(f"📊 Class weights (freq): {freq_weights}")
-        freq_weights = torch.tensor(freq_weights).to(device)
-        criterion = nn.CrossEntropyLoss(weight=freq_weights, reduction="none")
+        # Classification loss
+        if config.use_difficulty_scaling:
+            print(f"📊 Class weights (freq × difficulty): {class_weights}")
+            criterion = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
+        else:
+            print(f"📊 Class weights (freq): {freq_weights}")
+            freq_weights = torch.tensor(freq_weights).to(device)
+            criterion = nn.CrossEntropyLoss(weight=freq_weights, reduction="none")
 
     optimizer = optim.Adam(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
@@ -1759,7 +2022,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
             curriculum_train_indices = [train_indices[i] for i in curriculum_indices]
             curriculum_subset = Subset(train_dataset, curriculum_train_indices)
             train_loader = DataLoader(
-                curriculum_subset, batch_size=config.batch_size, shuffle=False
+                curriculum_subset, batch_size=config.batch_size, shuffle=False, collate_fn=vad_collate_fn
             )
 
             fraction = pacing_function(epoch, config.curriculum_epochs)
@@ -1812,40 +2075,97 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
                 model, train_dataset, train_indices, device, config, text_encoder
             )
 
-        val_dict = {
-            "val/accuracy": val_results["accuracy"],
-            "val/loss": val_results["loss"],
-            "val/uar": val_results["uar"],
-            "val/f1": val_results["f1_weighted"],
-        }
+        # Log validation metrics (different for classification vs regression)
+        task_type = getattr(config, 'task_type', 'classification')
+        if task_type == "regression":
+            val_dict = {
+                "val/loss": val_results["loss"],
+                "val/overall_mae": val_results["overall_mae"],
+                "val/overall_rmse": val_results["overall_rmse"],
+                "val/overall_corr": val_results["overall_corr"],
+                "val/overall_ccc": val_results["overall_ccc"],
+                "val/valence_mae": val_results["valence_mae"],
+                "val/valence_ccc": val_results["valence_ccc"],
+                "val/arousal_mae": val_results["arousal_mae"],
+                "val/arousal_ccc": val_results["arousal_ccc"],
+                "val/dominance_mae": val_results["dominance_mae"],
+                "val/dominance_ccc": val_results["dominance_ccc"],
+            }
+            metric_for_best_model = val_results["overall_ccc"]  # Use CCC for best model (higher is better)
+            metric_name = "CCC"
+        else:
+            val_dict = {
+                "val/accuracy": val_results["accuracy"],
+                "val/loss": val_results["loss"],
+                "val/uar": val_results["uar"],
+                "val/f1": val_results["f1_weighted"],
+            }
+            metric_for_best_model = val_results["uar"]  # Higher is better
+            metric_name = "UAR"
 
         wandb.log(val_dict)
 
-        if val_results["accuracy"] > best_val_acc:
-            best_val_acc = val_results["accuracy"]
-            best_model_state = model.state_dict().copy()
+        # Track best model based on appropriate metric
+        if task_type == "regression":
+            # For regression, use correlation (higher is better)
+            if metric_for_best_model > best_val_uar:  # Reusing best_val_uar as best metric tracker
+                best_val_uar = metric_for_best_model
+                best_model_state = model.state_dict().copy()
+                print(f"   🌟 New best model! {metric_name}: {metric_for_best_model:.4f}")
+        else:
+            # For classification, use accuracy and UAR
+            if val_results["accuracy"] > best_val_acc:
+                best_val_acc = val_results["accuracy"]
+                best_model_state = model.state_dict().copy()
 
-        if val_results["uar"] > best_val_uar:
-            best_val_uar = val_results["uar"]
+            if val_results["uar"] > best_val_uar:
+                best_val_uar = val_results["uar"]
 
-        print(
-            f"   Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_results['accuracy']:.4f}, Val UAR={val_results['uar']:.4f}"
-        )
+        # Print epoch summary
+        if task_type == "regression":
+            print(
+                f"   Epoch {epoch+1}: Train MAE={train_metrics['overall_mae']:.4f}, Train CCC={train_metrics['overall_ccc']:.4f}, Val MAE={val_results['overall_mae']:.4f}, Val CCC={val_results['overall_ccc']:.4f}"
+            )
+        else:
+            print(
+                f"   Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_results['accuracy']:.4f}, Val UAR={val_results['uar']:.4f}"
+            )
 
         # Step metric-based scheduler (ReduceLROnPlateau) after validation
         if scheduler is not None and isinstance(
             scheduler, lr_scheduler.ReduceLROnPlateau
         ):
-            scheduler.step(val_results["uar"])
+            scheduler.step(metric_for_best_model)
 
         # Check early stopping
         if use_early_stopping:
-            if early_stopping(val_results["uar"], epoch):
+            if early_stopping(metric_for_best_model, epoch):
                 print(f"   🛑 Stopping training at epoch {epoch+1}")
                 break
 
     # Load best model and evaluate on test sets with plots
     model.load_state_dict(best_model_state)
+
+    # Save the best model to disk
+    task_type = getattr(config, 'task_type', 'classification')
+    model_save_dir = Path("saved_models")
+    model_save_dir.mkdir(exist_ok=True)
+
+    model_filename = f"{config.experiment_name}_{task_type}_seed{config.seed}.pt"
+    model_save_path = model_save_dir / model_filename
+
+    # Save model, config, and additional metadata
+    save_dict = {
+        'model_state_dict': best_model_state,
+        'config': config.to_dict(),
+        'task_type': task_type,
+        'modality': config.modality,
+        'best_metric': best_val_uar,  # This is the best correlation for regression or UAR for classification
+    }
+
+    torch.save(save_dict, model_save_path)
+    print(f"💾 Model saved to: {model_save_path}")
+
     val_results = evaluate_model_multimodal(
         model,
         val_loader,
@@ -1853,7 +2173,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
         device,
         config,
         text_encoder=text_encoder,
-        create_plots=True,
+        create_plots=(task_type == "classification"),  # Only create plots for classification
         plot_title=f"Validation-{train_dataset.dataset_name}",
     )
 
@@ -1866,50 +2186,87 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
             device,
             config,
             text_encoder=text_encoder,
-            create_plots=True,
+            create_plots=(task_type == "classification"),  # Only create plots for classification
             plot_title=f"CrossCorpus-{test_name}",
         )
         test_results.append({"dataset": test_name, "results": test_result})
-        print(
-            f"   {test_name}: Acc={test_result['accuracy']:.4f}, UAR={test_result['uar']:.4f}"
-        )
+
+        # Print appropriate metrics based on task type
+        if task_type == "regression":
+            print(
+                f"   {test_name}: MAE={test_result['overall_mae']:.4f}, RMSE={test_result['overall_rmse']:.4f}, CCC={test_result['overall_ccc']:.4f}"
+            )
+        else:
+            print(
+                f"   {test_name}: Acc={test_result['accuracy']:.4f}, UAR={test_result['uar']:.4f}"
+            )
 
     # Log to wandb
     if wandb.run:
-        log_dict = {
-            "validation/accuracy": val_results["accuracy"],
-            "validation/uar": val_results["uar"],
-        }
+        if task_type == "regression":
+            log_dict = {
+                "validation/overall_mae": val_results["overall_mae"],
+                "validation/overall_rmse": val_results["overall_rmse"],
+                "validation/overall_corr": val_results["overall_corr"],
+                "validation/overall_ccc": val_results["overall_ccc"],
+                "validation/valence_mae": val_results["valence_mae"],
+                "validation/valence_ccc": val_results["valence_ccc"],
+                "validation/arousal_mae": val_results["arousal_mae"],
+                "validation/arousal_ccc": val_results["arousal_ccc"],
+                "validation/dominance_mae": val_results["dominance_mae"],
+                "validation/dominance_ccc": val_results["dominance_ccc"],
+            }
 
-        # Add validation plots
-        if "confusion_matrix" in val_results:
-            log_dict["validation/confusion_matrix"] = val_results["confusion_matrix"]
-        if "difficulty_plot" in val_results:
-            log_dict["validation/difficulty_plot"] = val_results["difficulty_plot"]
-            if "difficulty_analysis" in val_results:
-                analysis = val_results["difficulty_analysis"]
-                log_dict["validation/difficulty_correlation"] = analysis[
-                    "difficulty_accuracy_correlation"
-                ]
+            # Add test results
+            for test_result in test_results:
+                dataset_name = test_result["dataset"].lower()
+                prefix = f"{train_dataset.dataset_name}_TO_{dataset_name}"
+                results = test_result["results"]
+                log_dict[f"{prefix}/overall_mae"] = results["overall_mae"]
+                log_dict[f"{prefix}/overall_rmse"] = results["overall_rmse"]
+                log_dict[f"{prefix}/overall_corr"] = results["overall_corr"]
+                log_dict[f"{prefix}/overall_ccc"] = results["overall_ccc"]
+                log_dict[f"{prefix}/valence_mae"] = results["valence_mae"]
+                log_dict[f"{prefix}/valence_ccc"] = results["valence_ccc"]
+                log_dict[f"{prefix}/arousal_mae"] = results["arousal_mae"]
+                log_dict[f"{prefix}/arousal_ccc"] = results["arousal_ccc"]
+                log_dict[f"{prefix}/dominance_mae"] = results["dominance_mae"]
+                log_dict[f"{prefix}/dominance_ccc"] = results["dominance_ccc"]
+        else:
+            log_dict = {
+                "validation/accuracy": val_results["accuracy"],
+                "validation/uar": val_results["uar"],
+            }
 
-        # Add test results and plots
-        for test_result in test_results:
-            dataset_name = test_result["dataset"].lower()
-            prefix = f"{train_dataset.dataset_name}_TO_{dataset_name}"
-            results = test_result["results"]
-            log_dict[f"{prefix}/accuracy"] = results["accuracy"]
-            log_dict[f"{prefix}/uar"] = results["uar"]
-
-            # Add test plots
-            if "confusion_matrix" in results:
-                log_dict[f"{prefix}/confusion_matrix"] = results["confusion_matrix"]
-            if "difficulty_plot" in results:
-                log_dict[f"{prefix}/difficulty_plot"] = results["difficulty_plot"]
-                if "difficulty_analysis" in results:
-                    analysis = results["difficulty_analysis"]
-                    log_dict[f"{prefix}/difficulty_correlation"] = analysis[
+            # Add validation plots
+            if "confusion_matrix" in val_results:
+                log_dict["validation/confusion_matrix"] = val_results["confusion_matrix"]
+            if "difficulty_plot" in val_results:
+                log_dict["validation/difficulty_plot"] = val_results["difficulty_plot"]
+                if "difficulty_analysis" in val_results:
+                    analysis = val_results["difficulty_analysis"]
+                    log_dict["validation/difficulty_correlation"] = analysis[
                         "difficulty_accuracy_correlation"
                     ]
+
+            # Add test results and plots
+            for test_result in test_results:
+                dataset_name = test_result["dataset"].lower()
+                prefix = f"{train_dataset.dataset_name}_TO_{dataset_name}"
+                results = test_result["results"]
+                log_dict[f"{prefix}/accuracy"] = results["accuracy"]
+                log_dict[f"{prefix}/uar"] = results["uar"]
+
+                # Add test plots
+                if "confusion_matrix" in results:
+                    log_dict[f"{prefix}/confusion_matrix"] = results["confusion_matrix"]
+                if "difficulty_plot" in results:
+                    log_dict[f"{prefix}/difficulty_plot"] = results["difficulty_plot"]
+                    if "difficulty_analysis" in results:
+                        analysis = results["difficulty_analysis"]
+                        log_dict[f"{prefix}/difficulty_correlation"] = analysis[
+                            "difficulty_accuracy_correlation"
+                        ]
 
         wandb.log(log_dict)
 
@@ -1976,47 +2333,93 @@ def compute_averaged_results(all_results, config):
     """
     averaged = {}
 
+    task_type = getattr(config, 'task_type', 'classification')
+
     if config.evaluation_mode == "cross_corpus":
-        # Extract validation metrics
-        val_accs = [r["validation"]["accuracy"] for r in all_results]
-        val_uars = [r["validation"]["uar"] for r in all_results]
+        if task_type == "regression":
+            # Extract validation metrics for regression
+            val_maes = [r["validation"]["overall_mae"] for r in all_results]
+            val_cccs = [r["validation"]["overall_ccc"] for r in all_results]
 
-        averaged["validation"] = {
-            "accuracy_mean": np.mean(val_accs),
-            "accuracy_std": np.std(val_accs),
-            "uar_mean": np.mean(val_uars),
-            "uar_std": np.std(val_uars),
-        }
+            averaged["validation"] = {
+                "overall_mae_mean": np.mean(val_maes),
+                "overall_mae_std": np.std(val_maes),
+                "overall_ccc_mean": np.mean(val_cccs),
+                "overall_ccc_std": np.std(val_cccs),
+            }
 
-        # Extract test results for each dataset
-        test_datasets = [tr["dataset"] for tr in all_results[0]["test_results"]]
-        averaged["test_results"] = []
+            # Extract test results for each dataset
+            test_datasets = [tr["dataset"] for tr in all_results[0]["test_results"]]
+            averaged["test_results"] = []
 
-        for dataset_name in test_datasets:
-            # Collect metrics for this dataset across all seeds
-            accs = []
-            uars = []
-            f1s = []
+            for dataset_name in test_datasets:
+                maes = []
+                cccs = []
+                v_cccs, a_cccs, d_cccs = [], [], []
 
-            for result in all_results:
-                for test_result in result["test_results"]:
-                    if test_result["dataset"] == dataset_name:
-                        accs.append(test_result["results"]["accuracy"])
-                        uars.append(test_result["results"]["uar"])
-                        f1s.append(test_result["results"]["f1_weighted"])
-                        break
+                for result in all_results:
+                    for test_result in result["test_results"]:
+                        if test_result["dataset"] == dataset_name:
+                            maes.append(test_result["results"]["overall_mae"])
+                            cccs.append(test_result["results"]["overall_ccc"])
+                            v_cccs.append(test_result["results"]["valence_ccc"])
+                            a_cccs.append(test_result["results"]["arousal_ccc"])
+                            d_cccs.append(test_result["results"]["dominance_ccc"])
+                            break
 
-            averaged["test_results"].append(
-                {
-                    "dataset": dataset_name,
-                    "accuracy_mean": np.mean(accs),
-                    "accuracy_std": np.std(accs),
-                    "uar_mean": np.mean(uars),
-                    "uar_std": np.std(uars),
-                    "f1_mean": np.mean(f1s),
-                    "f1_std": np.std(f1s),
-                }
-            )
+                averaged["test_results"].append(
+                    {
+                        "dataset": dataset_name,
+                        "overall_mae_mean": np.mean(maes),
+                        "overall_mae_std": np.std(maes),
+                        "overall_ccc_mean": np.mean(cccs),
+                        "overall_ccc_std": np.std(cccs),
+                        "valence_ccc_mean": np.mean(v_cccs),
+                        "arousal_ccc_mean": np.mean(a_cccs),
+                        "dominance_ccc_mean": np.mean(d_cccs),
+                    }
+                )
+        else:
+            # Extract validation metrics for classification
+            val_accs = [r["validation"]["accuracy"] for r in all_results]
+            val_uars = [r["validation"]["uar"] for r in all_results]
+
+            averaged["validation"] = {
+                "accuracy_mean": np.mean(val_accs),
+                "accuracy_std": np.std(val_accs),
+                "uar_mean": np.mean(val_uars),
+                "uar_std": np.std(val_uars),
+            }
+
+            # Extract test results for each dataset
+            test_datasets = [tr["dataset"] for tr in all_results[0]["test_results"]]
+            averaged["test_results"] = []
+
+            for dataset_name in test_datasets:
+                # Collect metrics for this dataset across all seeds
+                accs = []
+                uars = []
+                f1s = []
+
+                for result in all_results:
+                    for test_result in result["test_results"]:
+                        if test_result["dataset"] == dataset_name:
+                            accs.append(test_result["results"]["accuracy"])
+                            uars.append(test_result["results"]["uar"])
+                            f1s.append(test_result["results"]["f1_weighted"])
+                            break
+
+                averaged["test_results"].append(
+                    {
+                        "dataset": dataset_name,
+                        "accuracy_mean": np.mean(accs),
+                        "accuracy_std": np.std(accs),
+                        "uar_mean": np.mean(uars),
+                        "uar_std": np.std(uars),
+                        "f1_mean": np.mean(f1s),
+                        "f1_std": np.std(f1s),
+                    }
+                )
 
     elif config.evaluation_mode == "loso":
         # Extract LOSO metrics
@@ -2123,50 +2526,87 @@ def log_averaged_results_to_wandb(averaged_results, config, experiment_name, see
     print(f"AVERAGED RESULTS ACROSS {len(seeds)} SEEDS")
     print(f"{'='*60}")
 
+    task_type = getattr(config, 'task_type', 'classification')
+
     if config.evaluation_mode == "cross_corpus":
-        # Log validation averages
         val = averaged_results["validation"]
-        print(f"\nValidation:")
-        print(f"  Accuracy: {val['accuracy_mean']:.4f} ± {val['accuracy_std']:.4f}")
-        print(f"  UAR: {val['uar_mean']:.4f} ± {val['uar_std']:.4f}")
 
-        wandb.log(
-            {
-                f"AVERAGED_{train_dataset_name}/validation_accuracy_mean": val[
-                    "accuracy_mean"
-                ],
-                f"AVERAGED_{train_dataset_name}/validation_accuracy_std": val[
-                    "accuracy_std"
-                ],
-                f"AVERAGED_{train_dataset_name}/validation_uar_mean": val["uar_mean"],
-                f"AVERAGED_{train_dataset_name}/validation_uar_std": val["uar_std"],
-            }
-        )
+        if task_type == "regression":
+            print(f"\nValidation:")
+            print(f"  MAE: {val['overall_mae_mean']:.4f} ± {val['overall_mae_std']:.4f}")
+            print(f"  CCC: {val['overall_ccc_mean']:.4f} ± {val['overall_ccc_std']:.4f}")
 
-        # Log test averages for each dataset
-        for test_result in averaged_results["test_results"]:
-            dataset_name = test_result["dataset"]
-            print(f"\n{train_dataset_name} → {dataset_name}:")
-            print(
-                f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}"
-            )
-            print(
-                f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}"
-            )
-
-            prefix = (
-                f"AVERAGED_{train_dataset_name}/{train_dataset_name}to{dataset_name}"
-            )
             wandb.log(
                 {
-                    f"{prefix}_accuracy_mean": test_result["accuracy_mean"],
-                    f"{prefix}_accuracy_std": test_result["accuracy_std"],
-                    f"{prefix}_uar_mean": test_result["uar_mean"],
-                    f"{prefix}_uar_std": test_result["uar_std"],
-                    f"{prefix}_f1_mean": test_result["f1_mean"],
-                    f"{prefix}_f1_std": test_result["f1_std"],
+                    f"AVERAGED_{train_dataset_name}/validation_mae_mean": val["overall_mae_mean"],
+                    f"AVERAGED_{train_dataset_name}/validation_mae_std": val["overall_mae_std"],
+                    f"AVERAGED_{train_dataset_name}/validation_ccc_mean": val["overall_ccc_mean"],
+                    f"AVERAGED_{train_dataset_name}/validation_ccc_std": val["overall_ccc_std"],
                 }
             )
+
+            for test_result in averaged_results["test_results"]:
+                dataset_name = test_result["dataset"]
+                print(f"\n{train_dataset_name} → {dataset_name}:")
+                print(f"  MAE: {test_result['overall_mae_mean']:.4f} ± {test_result['overall_mae_std']:.4f}")
+                print(f"  CCC: {test_result['overall_ccc_mean']:.4f} ± {test_result['overall_ccc_std']:.4f}")
+                print(f"  V/A/D CCC: {test_result['valence_ccc_mean']:.4f} / {test_result['arousal_ccc_mean']:.4f} / {test_result['dominance_ccc_mean']:.4f}")
+
+                prefix = f"AVERAGED_{train_dataset_name}/{train_dataset_name}to{dataset_name}"
+                wandb.log(
+                    {
+                        f"{prefix}_mae_mean": test_result["overall_mae_mean"],
+                        f"{prefix}_mae_std": test_result["overall_mae_std"],
+                        f"{prefix}_ccc_mean": test_result["overall_ccc_mean"],
+                        f"{prefix}_ccc_std": test_result["overall_ccc_std"],
+                        f"{prefix}_valence_ccc_mean": test_result["valence_ccc_mean"],
+                        f"{prefix}_arousal_ccc_mean": test_result["arousal_ccc_mean"],
+                        f"{prefix}_dominance_ccc_mean": test_result["dominance_ccc_mean"],
+                    }
+                )
+        else:
+            # Log validation averages
+            print(f"\nValidation:")
+            print(f"  Accuracy: {val['accuracy_mean']:.4f} ± {val['accuracy_std']:.4f}")
+            print(f"  UAR: {val['uar_mean']:.4f} ± {val['uar_std']:.4f}")
+
+            wandb.log(
+                {
+                    f"AVERAGED_{train_dataset_name}/validation_accuracy_mean": val[
+                        "accuracy_mean"
+                    ],
+                    f"AVERAGED_{train_dataset_name}/validation_accuracy_std": val[
+                        "accuracy_std"
+                    ],
+                    f"AVERAGED_{train_dataset_name}/validation_uar_mean": val["uar_mean"],
+                    f"AVERAGED_{train_dataset_name}/validation_uar_std": val["uar_std"],
+                }
+            )
+
+            # Log test averages for each dataset
+            for test_result in averaged_results["test_results"]:
+                dataset_name = test_result["dataset"]
+                print(f"\n{train_dataset_name} → {dataset_name}:")
+                print(
+                    f"  Accuracy: {test_result['accuracy_mean']:.4f} ± {test_result['accuracy_std']:.4f}"
+                )
+                print(
+                    f"  UAR: {test_result['uar_mean']:.4f} ± {test_result['uar_std']:.4f}"
+                )
+
+                prefix = (
+                    f"AVERAGED_{train_dataset_name}/{train_dataset_name}to{dataset_name}"
+                )
+                wandb.log(
+                    {
+                        f"{prefix}_accuracy_mean": test_result["accuracy_mean"],
+                        f"{prefix}_accuracy_std": test_result["accuracy_std"],
+                        f"{prefix}_uar_mean": test_result["uar_mean"],
+                        f"{prefix}_uar_std": test_result["uar_std"],
+                        f"{prefix}_f1_mean": test_result["f1_mean"],
+                        f"{prefix}_f1_std": test_result["f1_std"],
+                    }
+                )
 
     elif config.evaluation_mode == "loso":
         loso = averaged_results["loso"]

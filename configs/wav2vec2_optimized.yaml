@@ -1,0 +1,142 @@
+# Optimized configuration for PRECOMPUTED Wav2Vec2 features
+# These settings are specifically tuned for wav2vec2 representations
+
+template_config: &template
+  # Fixed settings
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16
+  train_dataset: "MSPP"
+  evaluation_mode: "cross_corpus"
+
+  # Model settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 512
+  hidden_dim: 1024
+  num_classes: 4
+  lr_scheduler_T_max: 60
+
+  # CRITICAL: Use "preextracted" for precomputed features!
+  audio_encoder_type: "preextracted"  # NOT "wav2vec2"!
+
+  # Optimized training settings for wav2vec2 features
+  num_epochs: 40  # Increased - wav2vec2 may need more epochs
+  batch_size: 64
+  learning_rate: 5e-5  # Higher LR (was 1e-6) - wav2vec2 features need more aggressive learning
+  weight_decay: 1e-4   # Increased from 5e-6 - more regularization
+  dropout: 0.3         # Increased from 0.001 - wav2vec2 needs more regularization
+
+  # Curriculum settings
+  use_curriculum_learning: false
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: false
+  use_speaker_disentanglement: false
+
+  post_curriculum_dropout: 0.4  # Increased from 0.001
+  wandb_project: "Wav2Vec2_Optimized"
+
+  # Class weights
+  class_weights:
+    neutral: 1.0
+    happy: 1.0
+    sad: 1.0
+    anger: 1.0
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+  # Seeds
+  seeds: [42, 37, 645]
+
+experiments:
+  # ===================================================================
+  # Wav2Vec2 Precomputed + BERT (OPTIMIZED)
+  # ===================================================================
+  - <<: *template
+    name: "Optimized_Wav2Vec2_BERT"
+    audio_encoder_type: "preextracted"
+    text_model_name: "bert-base-uncased"
+    learning_rate: 5e-5
+    dropout: 0.3
+    weight_decay: 1e-4
+
+  - <<: *template
+    name: "Optimized_Wav2Vec2_BERT_HighLR"
+    audio_encoder_type: "preextracted"
+    text_model_name: "bert-base-uncased"
+    learning_rate: 1e-4  # Even higher LR
+    dropout: 0.4
+    weight_decay: 1e-4
+
+  - <<: *template
+    name: "Optimized_Wav2Vec2_BERT_WithCurriculum"
+    audio_encoder_type: "preextracted"
+    text_model_name: "bert-base-uncased"
+    learning_rate: 5e-5
+    dropout: 0.3
+    weight_decay: 1e-4
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+  # ===================================================================
+  # Wav2Vec2 Precomputed + RoBERTa (OPTIMIZED)
+  # ===================================================================
+  - <<: *template
+    name: "Optimized_Wav2Vec2_RoBERTa"
+    audio_encoder_type: "preextracted"
+    text_model_name: "roberta-base"
+    learning_rate: 5e-5
+    dropout: 0.3
+    weight_decay: 1e-4
+
+  - <<: *template
+    name: "Optimized_Wav2Vec2_RoBERTa_WithCurriculum"
+    audio_encoder_type: "preextracted"
+    text_model_name: "roberta-base"
+    learning_rate: 5e-5
+    dropout: 0.3
+    weight_decay: 1e-4
+    use_curriculum_learning: true
+    use_difficulty_scaling: true
+    use_speaker_disentanglement: true
+
+# ===================================================================
+# KEY CHANGES FOR WAV2VEC2:
+# ===================================================================
+#
+# 1. audio_encoder_type: "preextracted" (NOT "wav2vec2"!)
+#    - Your features are already extracted, don't process them again!
+#
+# 2. Higher learning rate (5e-5 vs 1e-6)
+#    - Wav2Vec2 features are different from Emotion2Vec
+#    - Need more aggressive optimization
+#
+# 3. Higher dropout (0.3 vs 0.001)
+#    - Wav2Vec2 features trained on different task (ASR)
+#    - More regularization prevents overfitting to wrong features
+#
+# 4. Higher weight decay (1e-4 vs 5e-6)
+#    - Additional regularization
+#
+# 5. More epochs (40 vs 30)
+#    - May need longer training to adapt to wav2vec2 features
+#
+# ===================================================================
+# EXPECTED IMPROVEMENT:
+# ===================================================================
+#
+# With these changes, you should recover most of the 20% loss.
+# If still underperforming, the features themselves need to be
+# re-extracted using middle layers (see preprocesss_wav2vec_fixed.py)
+#

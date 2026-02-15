@@ -21,11 +21,11 @@ template_config: &template
   lr_scheduler_T_max: 60
 
   # Default training settings (will be varied)
-  num_epochs: 30
-  batch_size: 64
-  learning_rate: 1e-5
+  num_epochs: 50
+  batch_size: 32
+  learning_rate: 5e-6
   weight_decay: 5e-6
-  dropout: 0.1
+  dropout: 0.001
 
   # Curriculum settings
   use_curriculum_learning: false
@@ -36,8 +36,9 @@ template_config: &template
   use_difficulty_scaling: false
   use_speaker_disentanglement: false
 
-  post_curriculum_dropout: 0.6
-  wandb_project: "EncoderComparison_V03"
+  post_curriculum_dropout: 0.002
+  lam_mult: 0.75  # Multiplier for difficulty in class weight calculation
+  wandb_project: "EncoderComparison_V08"
 
   # Class weights
   class_weights:
@@ -133,75 +134,89 @@ experiments:
   # ===================================================================
   # Wav2Vec2 + BERT (BASE & FULL) - Memory Optimized
   # ===================================================================
+  # - <<: *template
+  #   name: "V2 BASE_Wav2Vec2_BERT"
+  #   audio_encoder_type: "wav2vec2"
+  #   audio_model_name: "facebook/wav2vec2-base-960h"
+  #   freeze_audio_encoder: true
+  #   text_model_name: "bert-base-uncased"
+
   - <<: *template
-    name: "BASE_Wav2Vec2_BERT"
+    name: "V2 FULL_Wav2Vec2_BERT_0.5"
     audio_encoder_type: "wav2vec2"
     audio_model_name: "facebook/wav2vec2-base-960h"
     freeze_audio_encoder: true
-    audio_pooling: "mean"
     text_model_name: "bert-base-uncased"
     batch_size: 16  # Reduced from 64 for memory efficiency
+    use_curriculum_learning: true
+    use_difficulty_scaling: false
+    use_speaker_disentanglement: true
 
+  # ===================================================================
   - <<: *template
-    name: "FULL_Wav2Vec2_BERT"
+    name: "V2 BASE_Wav2Vec2_Roberta"
     audio_encoder_type: "wav2vec2"
     audio_model_name: "facebook/wav2vec2-base-960h"
     freeze_audio_encoder: true
-    audio_pooling: "mean"
-    text_model_name: "bert-base-uncased"
-    batch_size: 16  # Reduced from 64 for memory efficiency
+    text_model_name: "roberta-base"
+
+  - <<: *template
+    name: "V2 FULL_Wav2Vec2_Roberta_0.5"
+    audio_encoder_type: "wav2vec2"
+    audio_model_name: "facebook/wav2vec2-base-960h"
+    freeze_audio_encoder: true
+    text_model_name: "roberta-base"
     use_curriculum_learning: true
     use_difficulty_scaling: true
     use_speaker_disentanglement: true
+    
 
 
-  # ===================================================================
-  # Wav2Vec2 + BERT (BASE & FULL) finetune - Memory Optimized
-  # ===================================================================
-  - <<: *template
-    name: "BASE_finetune_Wav2Vec2_BERT"
-    audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
-    freeze_audio_encoder: false
-    audio_pooling: "mean"
-    text_model_name: "bert-base-uncased"
-    batch_size: 8  # Even smaller for finetuning (requires more memory)
+  # # ===================================================================
+  # # Wav2Vec2 + BERT (BASE & FULL) finetune
+  # # ===================================================================
+  # - <<: *template
+  #   name: "BASE_finetune_Wav2Vec2_BERT"
+  #   audio_encoder_type: "wav2vec2"
+  #   audio_model_name: "facebook/wav2vec2-base-960h"
+  #   freeze_audio_encoder: false
+  #   audio_pooling: "mean"
+  #   text_model_name: "bert-base-uncased"
 
-  - <<: *template
-    name: "FULL_finetune_Wav2Vec2_BERT"
-    audio_encoder_type: "wav2vec2"
-    audio_model_name: "facebook/wav2vec2-base-960h"
-    freeze_audio_encoder: false
-    audio_pooling: "mean"
-    text_model_name: "bert-base-uncased"
-    batch_size: 8  # Even smaller for finetuning (requires more memory)
-    use_curriculum_learning: true
-    use_difficulty_scaling: true
-    use_speaker_disentanglement: true
+  # - <<: *template
+  #   name: "FULL_finetune_Wav2Vec2_BERT"
+  #   audio_encoder_type: "wav2vec2"
+  #   audio_model_name: "facebook/wav2vec2-base-960h"
+  #   freeze_audio_encoder: false
+  #   audio_pooling: "mean"
+  #   text_model_name: "bert-base-uncased"
+  #   use_curriculum_learning: true
+  #   use_difficulty_scaling: true
+  #   use_speaker_disentanglement: true
 
   # ===================================================================
   # HuBERT + BERT (BASE & FULL)
   # ===================================================================
-  - <<: *template
-    name: "BASE_HuBERT_BERT"
-    audio_encoder_type: "hubert"
-    audio_model_name: "facebook/hubert-base-ls960"
-    freeze_audio_encoder: true
-    audio_pooling: "mean"
-    text_model_name: "bert-base-uncased"
+#   - <<: *template
+#     name: "BASE_HuBERT_BERT"
+#     audio_encoder_type: "hubert"
+#     audio_model_name: "facebook/hubert-base-ls960"
+#     freeze_audio_encoder: true
+#     audio_pooling: "mean"
+#     text_model_name: "bert-base-uncased"
 
-  - <<: *template
-    name: "FULL_HuBERT_BERT"
-    audio_encoder_type: "hubert"
-    audio_model_name: "facebook/hubert-base-ls960"
-    freeze_audio_encoder: true
-    audio_pooling: "mean"
-    text_model_name: "bert-base-uncased"
-    use_curriculum_learning: true
-    use_difficulty_scaling: true
-    use_speaker_disentanglement: true
+#   - <<: *template
+#     name: "FULL_HuBERT_BERT"
+#     audio_encoder_type: "hubert"
+#     audio_model_name: "facebook/hubert-base-ls960"
+#     freeze_audio_encoder: true
+#     audio_pooling: "mean"
+#     text_model_name: "bert-base-uncased"
+#     use_curriculum_learning: true
+#     use_difficulty_scaling: true
+#     use_speaker_disentanglement: true
 
-# ===================================================================
+# # ===================================================================
 # USAGE INSTRUCTIONS
 # ===================================================================
 #
