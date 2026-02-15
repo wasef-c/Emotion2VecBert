@@ -35,7 +35,9 @@ class MultimodalEmotionClassifier(nn.Module):
         audio_encoder_type="preextracted",  # "wav2vec2", "hubert", "emotion2vec", "preextracted"
         audio_model_name=None,
         freeze_audio_encoder=True,
-        audio_pooling="mean"
+        audio_pooling="mean",
+        task_type="classification",  # "classification" or "regression"
+        vad_output_dim=3  # For regression task
     ):
         super().__init__()
 
@@ -48,6 +50,11 @@ class MultimodalEmotionClassifier(nn.Module):
         self.freeze_text_encoder = freeze_text_encoder
         self.audio_encoder_type = audio_encoder_type
         self.freeze_audio_encoder = freeze_audio_encoder
+        self.task_type = task_type
+        self.vad_output_dim = vad_output_dim
+
+        # Determine output dimension based on task type
+        self.output_dim = vad_output_dim if task_type == "regression" else num_classes
 
         # Initialize audio encoder if needed
         if modality in ["audio", "both"]:
@@ -96,29 +103,29 @@ class MultimodalEmotionClassifier(nn.Module):
             print(f"   Fusion hidden dim: {fusion_hidden_dim}")
 
     def _build_audio_only_model(self):
-        """Build audio-only classification model"""
+        """Build audio-only model (classification or regression)"""
         self.classifier = nn.Sequential(
             nn.Linear(self.audio_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
             nn.ReLU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(self.hidden_dim, self.num_classes)
+            nn.Linear(self.hidden_dim, self.output_dim)
         )
         self.dropout = nn.Dropout(self.dropout_rate)
 
     def _build_text_only_model(self):
-        """Build text-only classification model"""
+        """Build text-only model (classification or regression)"""
         self.classifier = nn.Sequential(
             nn.Linear(self.text_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
             nn.ReLU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(self.hidden_dim, self.num_classes)
+            nn.Linear(self.hidden_dim, self.output_dim)
         )
         self.dropout = nn.Dropout(self.dropout_rate)
 
     def _build_multimodal_model(self, fusion_type, fusion_hidden_dim, num_attention_heads, dropout):
-        """Build multimodal classification model with fusion"""
+        """Build multimodal model with fusion (classification or regression)"""
         # Get fusion module
         self.fusion_module = get_fusion_module(
             fusion_type=fusion_type,
@@ -129,13 +136,13 @@ class MultimodalEmotionClassifier(nn.Module):
             dropout=dropout
         )
 
-        # Classifier on top of fused features
+        # Classifier/Regressor on top of fused features
         self.classifier = nn.Sequential(
             nn.Linear(fusion_hidden_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(self.hidden_dim, self.num_classes)
+            nn.Linear(self.hidden_dim, self.output_dim)
         )
         self.dropout = nn.Dropout(dropout)
 
@@ -229,18 +236,22 @@ class MultimodalEmotionClassifier(nn.Module):
 
 class SimpleEmotionClassifier(nn.Module):
     """
-    Simple feedforward classifier for emotion recognition (audio-only)
+    Simple feedforward model for emotion recognition (audio-only)
     This is kept for backward compatibility with the original system
+    Supports both classification and regression tasks
     """
 
-    def __init__(self, input_dim=768, hidden_dim=1024, num_classes=4, dropout=0.1):
+    def __init__(self, input_dim=768, hidden_dim=1024, num_classes=4, dropout=0.1, task_type="classification", vad_output_dim=3):
         super().__init__()
+
+        self.task_type = task_type
+        output_dim = vad_output_dim if task_type == "regression" else num_classes
 
         self.linear1 = nn.Linear(input_dim, hidden_dim)
         self.layernorm = nn.LayerNorm(hidden_dim)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(hidden_dim, num_classes)
+        self.linear2 = nn.Linear(hidden_dim, output_dim)
 
     def set_dropout_rate(self, dropout_rate):
         """Dynamically change dropout rate"""
@@ -274,6 +285,8 @@ def create_model(config):
         model: Initialized model
     """
     modality = getattr(config, 'modality', 'audio')
+    task_type = getattr(config, 'task_type', 'classification')
+    vad_output_dim = getattr(config, 'vad_output_dim', 3)
 
     if modality == "audio":
         # Use simple audio-only model
@@ -281,7 +294,9 @@ def create_model(config):
             input_dim=getattr(config, 'audio_dim', 768),
             hidden_dim=config.hidden_dim,
             num_classes=config.num_classes,
-            dropout=config.dropout
+            dropout=config.dropout,
+            task_type=task_type,
+            vad_output_dim=vad_output_dim
         )
     else:
         # Use multimodal model
@@ -299,7 +314,9 @@ def create_model(config):
             audio_encoder_type=getattr(config, 'audio_encoder_type', 'preextracted'),
             audio_model_name=getattr(config, 'audio_model_name', None),
             freeze_audio_encoder=getattr(config, 'freeze_audio_encoder', True),
-            audio_pooling=getattr(config, 'audio_pooling', 'mean')
+            audio_pooling=getattr(config, 'audio_pooling', 'mean'),
+            task_type=task_type,
+            vad_output_dim=vad_output_dim
         )
 
     return model

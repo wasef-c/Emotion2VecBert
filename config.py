@@ -107,6 +107,16 @@ class Config:
         # Post-curriculum dropout
         self.post_curriculum_dropout = 0.6  # Dropout rate after curriculum learning completes
 
+        # Lambda multiplier for difficulty-based class weighting
+        self.lam_mult = 0.75  # Multiplier for avg_difficulty in class weight calculation
+
+        # Task type: "classification" or "regression"
+        self.task_type = "classification"  # "classification" for emotion classes, "regression" for VAD prediction
+
+        # VAD regression settings (only used when task_type="regression")
+        self.vad_output_dim = 3  # Valence, Arousal, Dominance
+        self.vad_loss_weights = [1.0, 1.0, 1.0]  # Weights for V, A, D losses
+
     def __repr__(self):
         """String representation of config"""
         config_str = "Configuration:\n"

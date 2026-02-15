@@ -1,0 +1,98 @@
+# VAD Regression Configuration
+# Train model to predict Valence, Arousal, Dominance values
+# NOTE: Only works with datasets that have VAD annotations (IEMO, MSPI, MSPP)
+# CMU-MOSEI and SAMSEMO do not have VAD values
+
+baseline: &baseline
+  # Task settings - REGRESSION MODE
+  task_type: "regression"  # "regression" for VAD prediction (not "classification")
+  vad_output_dim: 3  # Valence, Arousal, Dominance
+  vad_loss_weights: [1.0, 1.0, 1.0]  # Equal weights for V, A, D
+
+  # Model settings
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 8
+  modality: "both"  # "audio", "text", or "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 128
+  hidden_dim: 1024
+
+  # Training settings
+  num_epochs: 60
+  batch_size: 32
+  learning_rate: 5e-6
+  weight_decay: 5e-6
+  dropout: 0.1
+  post_curriculum_dropout: 0.1
+
+  # Curriculum learning (can still use difficulty for curriculum, even though we're predicting VAD)
+  use_curriculum_learning: false
+  curriculum_epochs: 0
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: false  # Not used for regression
+  use_speaker_disentanglement: false
+
+  # Dataset - IMPORTANT: Only use datasets with VAD annotations
+  train_dataset: "MSPP"  # Options: "IEMO", "MSPI", "MSPP" (NOT "CMUMOSEI" or "SAMSEMO")
+  evaluation_mode: "cross_corpus"
+
+  # Expected VAD values (normalized to 0-1 range, used for difficulty calculation)
+  expected_vad:
+    0: [0.5, 0.375, 0.5]   # neutral (mid valence, low-mid arousal, mid dominance)
+    1: [0.75, 0.7, 0.7]    # happy (high valence, high arousal, high dominance)
+    2: [0.2, 0.3, 0.25]    # sad (low valence, low arousal, low dominance)
+    3: [0.2, 0.8, 0.75]    # anger (low valence, high arousal, high dominance)
+
+  # WandB settings
+  wandb_project: "VAD_Regression_Experiments"
+  seeds: [42, 37]
+
+experiments:
+  # ============================================
+  # Audio-only VAD Regression
+  # # ============================================
+  # - <<: *baseline
+  #   name: "VAD_Audio_Only"
+  #   modality: "audio"
+
+  # ============================================
+  # Text-only VAD Regression
+  # ============================================
+  - <<: *baseline
+    name: "VAD_Text_Only"
+    modality: "text"
+
+  # ============================================
+  # Multimodal VAD Regression
+  # ============================================
+  - <<: *baseline
+    name: "VAD_Multimodal_CrossAttention"
+    modality: "both"
+    fusion_type: "cross_attention"
+
+  # ============================================
+  # Different Loss Weighting
+  # ============================================
+  - <<: *baseline
+    name: "VAD_WeightArousal"
+    vad_loss_weights: [1.0, 2.0, 1.0]  # Weight arousal more
+
+  - <<: *baseline
+    name: "VAD_WeightValence"
+    vad_loss_weights: [2.0, 1.0, 1.0]  # Weight valence more
+
+  # ============================================
+  # Test on Different Datasets
+  # ============================================
+  - <<: *baseline
+    name: "VAD_IEMO"
+    train_dataset: "IEMO"
+
+  - <<: *baseline
+    name: "VAD_MSPI"
+    train_dataset: "MSPI"

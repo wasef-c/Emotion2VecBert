@@ -128,21 +128,14 @@ def evaluate_model(model, data_loader, criterion, device, return_difficulties=Tr
 import math
 
 def calculate_difficulty(item, expected_vad, method="euclidean_distance", dataset=None):
-    """Calculate sample difficulty based on VAD values"""
-    
+    """Calculate sample difficulty based on VAD values (expects normalized 0-1 range)"""
+
     label = item.get('label', 0)
     valence = item.get('valence', item.get('EmoVal'))
     arousal = item.get('arousal', item.get('EmoAct'))
     domination = item.get('domination', item.get('consensus_domination', item.get('EmoDom')))
 
-    if dataset == "MSPP":
-        try:
-            valence = (valence - 1) * 4 / 6 + 1
-            arousal = (arousal - 1) * 4 / 6 + 1
-            domination = (domination - 1) * 4 / 6 + 1
-        except TypeError:
-            print(f"Scaling failed: {valence}, {arousal}, {domination}")
-
+    # VAD values should already be normalized to 0-1 range by dataset loader
     actual_vad = [valence, arousal, domination]
 
     # Check for missing values
@@ -603,11 +596,19 @@ class SpeakerGroupedDataLoader:
             first_item = self.dataset[batch_indices[0]]
             has_features = 'features' in first_item and first_item['features'] is not None
             has_transcript = 'transcript' in first_item and first_item['transcript'] is not None
+            # Check for VAD values - handle different possible field names
+            has_vad = (
+                ('valence' in first_item and first_item['valence'] is not None) or
+                ('consensus_valence' in first_item and first_item['consensus_valence'] is not None) or
+                ('EmoVal' in first_item and first_item['EmoVal'] is not None)
+            )
 
             if has_features:
                 batch['features'] = []
             if has_transcript:
                 batch['transcript'] = []
+            if has_vad:
+                batch['vad'] = []  # Will store [valence, arousal, dominance] for each sample
 
             for idx in batch_indices:
                 item = self.dataset[idx]
@@ -616,6 +617,12 @@ class SpeakerGroupedDataLoader:
                     batch['features'].append(item['features'])
                 if has_transcript:
                     batch['transcript'].append(item['transcript'])
+                if has_vad:
+                    # Get VAD values, handling different possible key names
+                    valence = item.get('valence', item.get('consensus_valence', item.get('EmoVal', 0.0)))
+                    arousal = item.get('arousal', item.get('consensus_arousal', item.get('EmoAct', 0.0)))
+                    dominance = item.get('domination', item.get('consensus_dominance', item.get('EmoDom', 0.0)))
+                    batch['vad'].append([valence, arousal, dominance])
 
                 batch['label'].append(item['label'])
                 batch['speaker_id'].append(item['speaker_id'])
@@ -626,6 +633,8 @@ class SpeakerGroupedDataLoader:
             # Stack tensors
             if has_features:
                 batch['features'] = torch.stack(batch['features'])
+            if has_vad:
+                batch['vad'] = torch.tensor(batch['vad'], dtype=torch.float32)
             batch['label'] = torch.stack(batch['label'])
             batch['speaker_id'] = torch.tensor(batch['speaker_id'])
             batch['session'] = torch.tensor(batch['session'])
@@ -637,10 +646,288 @@ class SpeakerGroupedDataLoader:
         return len(self.sampler)
 
 
+def vad_collate_fn(batch):
+    """
+    Custom collate function that handles VAD values for regression tasks
+    Combines separate valence, arousal, dominance fields into a single 'vad' tensor
+    Also preserves the separate fields for backward compatibility
+    """
+    # Check if first item has VAD fields - handle different possible field names
+    first_item = batch[0]
+
+    has_vad = (
+        ('valence' in first_item and first_item['valence'] is not None) or
+        ('consensus_valence' in first_item and first_item['consensus_valence'] is not None) or
+        ('EmoVal' in first_item and first_item['EmoVal'] is not None)
+    )
+
+    collated = {
+        'label': [],
+        'speaker_id': [],
+        'session': [],
+        'dataset': [],
+        'difficulty': [],
+    }
+
+    # Check for optional fields
+    has_features = 'features' in first_item and first_item['features'] is not None
+    has_transcript = 'transcript' in first_item
+
+    if has_features:
+        collated['features'] = []
+    if has_transcript:
+        collated['transcript'] = []
+    if has_vad:
+        collated['vad'] = []
+        # Also preserve separate fields for backward compatibility (e.g., for difficulty calculation)
+        collated['valence'] = []
+        collated['arousal'] = []
+        collated['dominance'] = []
+
+    for item in batch:
+        if has_features:
+            collated['features'].append(item['features'])
+        if has_transcript:
+            collated['transcript'].append(item['transcript'])
+
+        collated['label'].append(item['label'])
+        collated['speaker_id'].append(item['speaker_id'])
+        collated['session'].append(item['session'])
+        collated['dataset'].append(item['dataset'])
+        collated['difficulty'].append(item['difficulty'])
+
+        if has_vad:
+            # Extract VAD values, handling different possible key names
+            valence = item.get('valence', item.get('consensus_valence', item.get('EmoVal', 0.0)))
+            arousal = item.get('arousal', item.get('consensus_arousal', item.get('EmoAct', 0.0)))
+            dominance = item.get('domination', item.get('consensus_dominance', item.get('EmoDom', 0.0)))
+
+            # Add to combined VAD tensor
+            collated['vad'].append([valence, arousal, dominance])
+
+            # Also preserve separate fields
+            collated['valence'].append(valence)
+            collated['arousal'].append(arousal)
+            collated['dominance'].append(dominance)
+
+    # Convert to tensors
+    if has_features:
+        collated['features'] = torch.stack(collated['features'])
+    if has_vad:
+        collated['vad'] = torch.tensor(collated['vad'], dtype=torch.float32)
+        collated['valence'] = torch.tensor(collated['valence'], dtype=torch.float32)
+        collated['arousal'] = torch.tensor(collated['arousal'], dtype=torch.float32)
+        collated['dominance'] = torch.tensor(collated['dominance'], dtype=torch.float32)
+
+    collated['label'] = torch.stack(collated['label'])
+    collated['speaker_id'] = torch.tensor(collated['speaker_id'])
+    collated['session'] = torch.tensor(collated['session'])
+    collated['difficulty'] = torch.tensor(collated['difficulty'], dtype=torch.float32)
+
+    return collated
+
+
 def create_data_loader(dataset, batch_size, shuffle=True, use_speaker_disentanglement=False, num_workers=0):
     """Create appropriate data loader based on speaker disentanglement setting"""
     if use_speaker_disentanglement:
         return SpeakerGroupedDataLoader(dataset, batch_size, shuffle, num_workers)
     else:
         # print("📦 Using Standard DataLoader")
-        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+        # Use custom collate function to handle VAD values
+        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=vad_collate_fn)
+
+
+# ============================================
+# VAD Regression Functions
+# ============================================
+
+def calculate_ccc(predictions, targets):
+    """
+    Calculate Concordance Correlation Coefficient (CCC)
+    CCC measures agreement between two variables (better than Pearson for regression)
+
+    Args:
+        predictions: numpy array of predictions
+        targets: numpy array of ground truth
+
+    Returns:
+        float: CCC value between -1 and 1 (1 = perfect agreement)
+    """
+    # Means
+    mean_pred = np.mean(predictions)
+    mean_target = np.mean(targets)
+
+    # Variances
+    var_pred = np.var(predictions)
+    var_target = np.var(targets)
+
+    # Standard deviations
+    sd_pred = np.std(predictions)
+    sd_target = np.std(targets)
+
+    # Pearson correlation
+    if sd_pred > 0 and sd_target > 0:
+        pearson_corr = np.corrcoef(predictions, targets)[0, 1]
+    else:
+        return 0.0
+
+    # CCC formula
+    numerator = 2 * pearson_corr * sd_pred * sd_target
+    denominator = var_pred + var_target + (mean_pred - mean_target) ** 2
+
+    if denominator > 0:
+        ccc = numerator / denominator
+    else:
+        ccc = 0.0
+
+    return ccc
+
+
+def calculate_vad_metrics(predictions, targets):
+    """
+    Calculate regression metrics for VAD prediction
+
+    Args:
+        predictions: numpy array of shape (n_samples, 3) - predicted V, A, D values
+        targets: numpy array of shape (n_samples, 3) - ground truth V, A, D values
+
+    Returns:
+        dict with MAE, RMSE, correlation, and CCC for each dimension and overall
+    """
+    predictions = np.array(predictions)
+    targets = np.array(targets)
+
+    # Per-dimension metrics
+    vad_names = ['valence', 'arousal', 'dominance']
+    metrics = {}
+
+    for i, name in enumerate(vad_names):
+        pred_dim = predictions[:, i]
+        target_dim = targets[:, i]
+
+        # MAE (Mean Absolute Error)
+        mae = np.mean(np.abs(pred_dim - target_dim))
+
+        # RMSE (Root Mean Squared Error)
+        rmse = np.sqrt(np.mean((pred_dim - target_dim) ** 2))
+
+        # Pearson Correlation
+        if np.std(pred_dim) > 0 and np.std(target_dim) > 0:
+            correlation = np.corrcoef(pred_dim, target_dim)[0, 1]
+        else:
+            correlation = 0.0
+
+        # CCC (Concordance Correlation Coefficient)
+        ccc = calculate_ccc(pred_dim, target_dim)
+
+        metrics[f'{name}_mae'] = mae
+        metrics[f'{name}_rmse'] = rmse
+        metrics[f'{name}_corr'] = correlation
+        metrics[f'{name}_ccc'] = ccc
+
+    # Overall metrics (averaged across dimensions)
+    metrics['overall_mae'] = np.mean([metrics[f'{name}_mae'] for name in vad_names])
+    metrics['overall_rmse'] = np.mean([metrics[f'{name}_rmse'] for name in vad_names])
+    metrics['overall_corr'] = np.mean([metrics[f'{name}_corr'] for name in vad_names])
+    metrics['overall_ccc'] = np.mean([metrics[f'{name}_ccc'] for name in vad_names])
+
+    return metrics
+
+
+def create_ccc_plot(results):
+    """
+    Create a bar plot of CCC per VAD dimension for validation and each cross-corpus test set
+
+    Args:
+        results: dict with 'validation' and 'test_results' keys from run_cross_corpus_evaluation
+
+    Returns:
+        wandb.Image of the plot
+    """
+    val = results["validation"]
+    test_results = results.get("test_results", [])
+
+    # Collect dataset names and CCC values
+    dataset_names = ["Validation"] + [tr["dataset"] for tr in test_results]
+    valence_cccs = [val["valence_ccc"]] + [tr["results"]["valence_ccc"] for tr in test_results]
+    arousal_cccs = [val["arousal_ccc"]] + [tr["results"]["arousal_ccc"] for tr in test_results]
+    dominance_cccs = [val["dominance_ccc"]] + [tr["results"]["dominance_ccc"] for tr in test_results]
+    overall_cccs = [val["overall_ccc"]] + [tr["results"]["overall_ccc"] for tr in test_results]
+
+    n_datasets = len(dataset_names)
+    x = np.arange(n_datasets)
+    bar_width = 0.2
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    bars_v = ax.bar(x - 1.5 * bar_width, valence_cccs, bar_width, label="Valence", color="#4e79a7")
+    bars_a = ax.bar(x - 0.5 * bar_width, arousal_cccs, bar_width, label="Arousal", color="#f28e2b")
+    bars_d = ax.bar(x + 0.5 * bar_width, dominance_cccs, bar_width, label="Dominance", color="#e15759")
+    bars_o = ax.bar(x + 1.5 * bar_width, overall_cccs, bar_width, label="Overall", color="#76b7b2", linestyle="--", edgecolor="black")
+
+    # Add value labels on bars
+    for bars in [bars_v, bars_a, bars_d, bars_o]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(
+                f"{height:.3f}",
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 3), textcoords="offset points",
+                ha="center", va="bottom", fontsize=8
+            )
+
+    ax.set_ylabel("CCC", fontsize=12)
+    ax.set_title("Concordance Correlation Coefficient (CCC) - Cross-Corpus VAD Regression", fontsize=13)
+    ax.set_xticks(x)
+    ax.set_xticklabels(dataset_names, fontsize=11)
+    ax.legend(fontsize=10)
+    ax.set_ylim(bottom=min(0, min(valence_cccs + arousal_cccs + dominance_cccs + overall_cccs) - 0.1))
+    ax.axhline(y=0, color="gray", linestyle="-", linewidth=0.8)
+    ax.axhline(y=0.5, color="green", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.axhline(y=0.7, color="darkgreen", linestyle="--", linewidth=0.8, alpha=0.5)
+
+    plt.tight_layout()
+
+    # Save to temp file and return as wandb Image
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        fig.savefig(tmp.name, dpi=150)
+        plt.close(fig)
+        return wandb.Image(tmp.name)
+
+
+class VADRegressionLoss(nn.Module):
+    """
+    Weighted MSE loss for VAD regression
+    Allows different weights for V, A, D dimensions
+    """
+    def __init__(self, weights=None):
+        """
+        Args:
+            weights: list of 3 floats for V, A, D weights (default: [1.0, 1.0, 1.0])
+        """
+        super().__init__()
+        if weights is None:
+            weights = [1.0, 1.0, 1.0]
+        self.weights = torch.tensor(weights, dtype=torch.float32)
+
+    def forward(self, predictions, targets):
+        """
+        Args:
+            predictions: (batch_size, 3) - predicted V, A, D
+            targets: (batch_size, 3) - ground truth V, A, D
+
+        Returns:
+            scalar loss value
+        """
+        # Move weights to same device as predictions
+        if self.weights.device != predictions.device:
+            self.weights = self.weights.to(predictions.device)
+
+        # Calculate per-dimension squared errors
+        squared_errors = (predictions - targets) ** 2
+
+        # Apply weights and average
+        weighted_errors = squared_errors * self.weights.unsqueeze(0)
+        loss = weighted_errors.mean()
+
+        return loss
