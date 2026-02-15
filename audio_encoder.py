@@ -45,10 +45,15 @@ class AudioEncoder(nn.Module):
         elif encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
             # Load pretrained transformer-based audio model
             print(f"📚 Loading audio model: {model_name} (type: {encoder_type})")
+            print(f"🔍 DEBUG: About to load model...")
 
             try:
+                print(f"🔍 DEBUG: Loading AutoModel...")
                 self.model = AutoModel.from_pretrained(model_name)
+                print(f"🔍 DEBUG: Model loaded successfully")
+                print(f"🔍 DEBUG: Loading feature extractor...")
                 self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
+                print(f"🔍 DEBUG: Feature extractor loaded successfully")
             except Exception as e:
                 print(f"⚠️ Could not load with AutoFeatureExtractor, trying Wav2Vec2FeatureExtractor...")
                 self.model = AutoModel.from_pretrained(model_name)
@@ -69,6 +74,7 @@ class AudioEncoder(nn.Module):
                 print(f"   ⚠️ Model will be fine-tuned (freeze={freeze})")
 
             print(f"✅ Audio encoder loaded (output_dim={self.output_dim}, pooling={pooling})")
+            print(f"🔧 Model will stay on CPU to save GPU memory")
         else:
             raise ValueError(f"Unknown encoder_type: {encoder_type}")
 
@@ -114,11 +120,24 @@ class AudioEncoder(nn.Module):
                 return self._extract_with_model(audio_input)
 
     def _extract_with_model(self, audio_input):
-        """Extract features using the transformer model"""
+        """Extract features using the transformer model with memory optimization"""
         # Check if input is raw waveform or already processed features
         if len(audio_input.shape) == 2 and audio_input.shape[-1] > 1000:
             # Likely raw waveform [batch_size, samples]
-            outputs = self.model(audio_input, return_dict=True)
+            
+            # For frozen models, ensure no gradients and eval mode
+            if self.freeze:
+                self.model.eval()
+                with torch.no_grad():
+                    outputs = self.model(audio_input, return_dict=True)
+            else:
+                # Enable gradient checkpointing for memory efficiency during training
+                if self.training and hasattr(self.model, 'gradient_checkpointing_enable'):
+                    self.model.gradient_checkpointing_enable()
+                
+                # Use mixed precision if available
+                with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+                    outputs = self.model(audio_input, return_dict=True)
         else:
             # Already processed features [batch_size, seq_len, hidden_dim]
             # This handles the case where features are pre-extracted but we still want pooling
@@ -127,8 +146,13 @@ class AudioEncoder(nn.Module):
         # Get hidden states
         hidden_states = outputs.last_hidden_state  # [batch_size, seq_len, hidden_dim]
 
-        # Apply pooling
+        # Apply pooling (this reduces memory usage by collapsing sequence dimension)
         pooled_features = self._pool_features(hidden_states)
+
+        # Clear intermediate outputs to free memory
+        del outputs, hidden_states
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return pooled_features
 

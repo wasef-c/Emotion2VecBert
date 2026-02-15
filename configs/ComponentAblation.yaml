@@ -1,0 +1,143 @@
+# Multi-Dataset Training Configuration
+# Train on combinations of datasets to improve generalization
+# NOTE: Only IEMO, MSPI, and MSPP have VAD values required for difficulty-based curriculum learning
+# CMUMOSEI and SAMSEMO are excluded from training but used for testing
+
+template: &template
+  # Fixed settings (best from ablation)
+  fusion_type: "cross_attention"
+  fusion_hidden_dim: 1024
+  num_attention_heads: 16
+  train_dataset: "MSPP"
+  evaluation_mode: "cross_corpus"
+
+  # Model settings
+  modality: "both"
+  audio_dim: 768
+  text_model_name: "bert-base-uncased"
+  freeze_text_encoder: true
+  text_max_length: 512
+  hidden_dim: 1024
+  num_classes: 4
+  lr_scheduler_T_max: 60
+
+  # Default training settings (will be varied)
+  num_epochs: 30
+  batch_size: 64
+  learning_rate: 1e-5
+  weight_decay: 5e-6
+  dropout: 0.1
+
+  # Curriculum settings
+  use_curriculum_learning: false
+  curriculum_epochs: 15
+  curriculum_pacing: "sqrt"
+  curriculum_type: "difficulty"
+  difficulty_method: "euclidean_distance"
+  use_difficulty_scaling: false
+  use_speaker_disentanglement: false
+
+  post_curriculum_dropout: 0.6
+
+  wandb_project: "COMPARE CURRICULUM"
+  seeds: [42, 37, 645]
+
+  # Expected VAD values
+  expected_vad:
+    0: [3.0, 2.5, 3.0]  # neutral
+    1: [4.0, 3.8, 3.8]  # happy
+    2: [1.8, 2.2, 2.0]  # sad
+    3: [1.8, 4.2, 4.0]  # anger
+
+experiments:
+#        self.curriculum_type = "difficulty"  # "difficulty", "class_balance", "inverse_difficulty", "model_confidence", "random", "none", "preset_order"
+  # - <<: *template
+  #   name: "Baseline"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: false
+  #   use_speaker_disentanglement: false
+  #   use_difficulty_scaling: false
+
+  # - <<: *template
+  #   name: "Spkr Only"
+  #   train_dataset: "MSPP"
+  #   use_difficulty_scaling: false
+  #   use_speaker_disentanglement: true
+  #   use_difficulty_scaling: false
+
+  # - <<: *template
+  #   name: "Scaling Only"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: false
+  #   use_speaker_disentanglement: false
+  #   use_difficulty_scaling: true
+  - <<: *template
+    name: "Inverse Curriculum Only"
+    train_dataset: "MSPP"
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: false
+    curriculum_type: inverse_difficulty
+
+
+  # - <<: *template
+  #   name: "Curriculum Only"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: true
+  #   use_speaker_disentanglement: false
+  #   use_difficulty_scaling: false
+  
+  # - <<: *template
+  #   name: "spkr+scaling"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: false
+  #   use_speaker_disentanglement: true
+  #   use_difficulty_scaling: true
+
+
+  # - <<: *template
+  #   name: "curr+scaling"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: true
+  #   use_speaker_disentanglement: false
+  #   use_difficulty_scaling: true
+
+  # - <<: *template
+  #   name: "curr+spkr"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: true
+  #   use_speaker_disentanglement: true
+  #   use_difficulty_scaling: false
+
+  # - <<: *template
+  #   name: "Full System"
+  #   train_dataset: "MSPP"
+  #   use_curriculum_learning: true
+  #   use_speaker_disentanglement: true
+  #   use_difficulty_scaling: true
+    
+  - <<: *template
+    name: "Annotator Curriculum"
+    train_dataset: "MSPP"
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: false
+    curriculum_type: preset_order
+
+  - <<: *template
+    name: "Confidence Curriculum"
+    train_dataset: "MSPP"
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: false
+    curriculum_type: model_confidence
+
+
+  - <<: *template
+    name: "Random Curriculum"
+    train_dataset: "MSPP"
+    use_curriculum_learning: true
+    use_speaker_disentanglement: false
+    use_difficulty_scaling: false
+    curriculum_type: random
+

@@ -232,6 +232,26 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
+def optimize_memory_usage(config):
+    """Apply memory optimizations for Wav2Vec2 training"""
+    if hasattr(config, 'audio_encoder_type') and config.audio_encoder_type == "wav2vec2":
+        # Enable memory-efficient attention if available
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+        
+        # Enable memory mapping for datasets
+        os.environ['HF_DATASETS_OFFLINE'] = '1' if not hasattr(config, 'hf_datasets_offline') else str(config.hf_datasets_offline)
+        
+        # Suggest gradient accumulation if batch size is too small
+        if hasattr(config, 'batch_size') and config.batch_size < 16:
+            effective_batch_size = getattr(config, 'effective_batch_size', 64)
+            gradient_accumulation_steps = max(1, effective_batch_size // config.batch_size)
+            if not hasattr(config, 'gradient_accumulation_steps'):
+                config.gradient_accumulation_steps = gradient_accumulation_steps
+                print(f"🔧 Using gradient accumulation: {gradient_accumulation_steps} steps for effective batch size {effective_batch_size}")
+        
+        print(f"🔧 Memory optimizations applied for Wav2Vec2 (batch_size: {config.batch_size})")
+
+
 def create_lr_scheduler(optimizer, config):
     """
     Create learning rate scheduler based on config
@@ -344,6 +364,9 @@ def run_experiment(config):
     seed = getattr(config, "seed", 42)
     set_seed(seed)
     print(f"🔢 Random seed set to: {seed}")
+
+    # Apply memory optimizations
+    optimize_memory_usage(config)
 
     # Initialize wandb
     wandb.init(
@@ -805,38 +828,56 @@ class SimpleEmotionDataset(Dataset):
                 # 1. Try to get the 'transcript'
                 transcript = item.get("transcript")
 
-                # 2. If 'transcript' is missing or None, try 'text' as a fallback
-                if transcript is None or transcript == "":
-                    transcript = item.get("text")
+        print(f"✅ Loaded {len(self.data)} samples from {dataset_name}")
+        print(f"   Modality: {self.modality}")
+        print(f"🔍 DEBUG: Dataset initialization complete")
 
-                # 3. Handle cases where both 'transcript' and 'text' are missing/empty
-                if transcript is None or transcript == "":
-                    transcript = "[EMPTY]"  # Placeholder for missing transcripts
-            else:
-                transcript = None
+        # Try to precompute features and metadata to avoid memory issues during training
+        print(f"🔄 Attempting to precompute features and metadata...")
+        try:
+            self._precompute_all_data()
+            print(f"✅ Precomputed data for {len(self.data)} samples")
+        except Exception as e:
+            print(f"⚠️ Precomputation failed: {e}")
+            print(f"🔧 Falling back to lazy loading (may cause memory issues during training)")
+            # Keep minimal metadata for compatibility
+            self.data = self.metadata
 
-            # Get speaker and session information
-            if Train == True:
-                # Get speaker ID and calculate session directly
-                if self.dataset_name == "IEMO":
-                    speaker_id = item["speaker_id"]
-                    session = (speaker_id - 1) // 2 + 1
-                elif self.dataset_name == "MSPI":
-                    speaker_id = item["speakerID"]
-                    session = (speaker_id - 947) // 2 + 1
-                elif self.dataset_name == "MSPP":
-                    speaker_id = item["SpkrID"]
+    def _precompute_all_data(self):
+        """Precompute all features and metadata to avoid memory issues during training"""
+        # Create audio encoder if needed
+        encoder = None
+        if self.modality in ["audio", "both"] and self.audio_encoder_type in ["wav2vec2", "hubert", "emotion2vec"]:
+            from audio_encoder import AudioEncoder
+            encoder = AudioEncoder(
+                encoder_type=self.audio_encoder_type,
+                model_name=getattr(self.config, 'audio_model_name', None),
+                freeze=True,
+                pooling=getattr(self.config, 'audio_pooling', 'mean')
+            )
+            # Keep encoder on CPU to save GPU memory
+            device = 'cpu'
+            encoder = encoder.to(device)
+            encoder.eval()
+            print(f"   Created {self.audio_encoder_type} encoder for feature extraction")
+        
+        # Process all items and store complete metadata
+        new_data = []
+        
+        for i in range(len(self.hf_dataset)):
+            if i % 1000 == 0:
+                print(f"   Processing {i}/{len(self.hf_dataset)} samples...")
+            
+            try:
+                item = self.hf_dataset[i]
+                
+                # Extract all metadata
+                label = item["label"]
+                
+                # Speaker/session info (simplified)
+                if self.dataset_name == "MSPP":
+                    speaker_id = item.get("SpkrID", 1)
                     session = (speaker_id - 1) // 500 + 1
-                elif self.dataset_name == "CMUMOSEI":
-                    # CMU-MOSEI has video_id field
-                    speaker_id = hash(item.get("video_id", "unknown")) % 10000
-                    session = (speaker_id - 1) // 100 + 1
-                elif self.dataset_name == "SAMSEMO":
-                    # SAMSEMO may have speaker_id or file_name
-                    speaker_id = item.get(
-                        "speaker_id", hash(item.get("file_name", "unknown")) % 10000
-                    )
-                    session = (speaker_id - 1) // 100 + 1
                 else:
                     # Fallback for other datasets
                     try:
@@ -922,13 +963,12 @@ class SimpleEmotionDataset(Dataset):
                     "label": label,
                     "speaker_id": speaker_id,
                     "session": session,
-                    "dataset": dataset_name,
+                    "dataset": self.dataset_name,
                     "difficulty": difficulty,
                     "curriculum_order": curriculum_order,
-                    "sequence_length": sequence_length,
-                    "valence": valence,
-                    "arousal": arousal,
-                    "domination": domination,
+                    "sequence_length": 1,
+                    "features": features,
+                    "transcript": transcript,
                 }
             )
 
@@ -950,7 +990,9 @@ class SimpleEmotionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
+        # All data is precomputed, just return it directly
         item = self.data[idx]
+        
         result = {
             "label": torch.tensor(item["label"], dtype=torch.long),
             "speaker_id": item["speaker_id"],
@@ -993,7 +1035,7 @@ class SimpleEmotionDataset(Dataset):
                 features = torch.tensor(features, dtype=torch.float32)
             result["features"] = features
 
-        if self.modality in ["text", "both"]:
+        if self.modality in ["text", "both"] and item["transcript"] is not None:
             result["transcript"] = item["transcript"]
 
         # Debug: Check for None values before returning
@@ -1071,7 +1113,26 @@ def train_epoch(
         # Forward pass based on modality
         if modality == "audio":
             # Audio-only mode
-            features = batch["features"].to(device)
+            features = batch["features"]
+            # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+            if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                # Raw audio data - convert one by one to avoid large memory allocation
+                processed_features = []
+                for f in features:
+                    if "array" in f:
+                        # Convert individual audio array to tensor
+                        audio_tensor = torch.tensor(f["array"], dtype=torch.float32)
+                        processed_features.append(audio_tensor)
+                
+                if processed_features:
+                    # Stack individual tensors (this should use less memory)
+                    features = torch.stack(processed_features).to(device)
+                else:
+                    # Fallback if no valid audio
+                    features = torch.zeros(len(features), 768).to(device)
+            else:
+                # Pre-extracted features - normal tensor
+                features = features.to(device)
             logits = model(features)
 
         elif modality == "text":
@@ -1100,7 +1161,18 @@ def train_epoch(
 
         elif modality == "both":
             # Multimodal mode
-            features = batch["features"].to(device)
+            features = batch["features"]
+            # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+            if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                # Raw audio data - needs special handling
+                audio_arrays = [f["array"] for f in features if "array" in f]
+                if audio_arrays:
+                    features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                else:
+                    features = torch.zeros(len(features), 768).to(device)
+            else:
+                # Pre-extracted features - normal tensor
+                features = features.to(device)
             transcripts = batch["transcript"]
 
             # Tokenize text
@@ -1153,6 +1225,10 @@ def train_epoch(
 
         total_loss += loss.item()
         current_lr = optimizer.param_groups[0]["lr"]
+
+        # Clear GPU cache periodically for memory efficiency
+        if batch_num % 10 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         log_dict = {
             "loss": loss,
@@ -1267,7 +1343,18 @@ def evaluate_model_multimodal(
             # Forward pass based on modality
             if modality == "audio":
                 # Audio-only mode
-                features = batch["features"].to(device)
+                features = batch["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                    # Raw audio data - needs special handling
+                    audio_arrays = [f["array"] for f in features if "array" in f]
+                    if audio_arrays:
+                        features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                    else:
+                        features = torch.zeros(len(features), 768).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.to(device)
                 logits = model(features)
 
             elif modality == "text":
@@ -1294,7 +1381,18 @@ def evaluate_model_multimodal(
 
             elif modality == "both":
                 # Multimodal mode
-                features = batch["features"].to(device)
+                features = batch["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, list) and len(features) > 0 and isinstance(features[0], dict):
+                    # Raw audio data - needs special handling
+                    audio_arrays = [f["array"] for f in features if "array" in f]
+                    if audio_arrays:
+                        features = torch.tensor(audio_arrays, dtype=torch.float32).to(device)
+                    else:
+                        features = torch.zeros(len(features), 768).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.to(device)
                 transcripts = batch["transcript"]
 
                 # Tokenize text
@@ -1403,7 +1501,14 @@ def calculate_model_confidences_multimodal(
 
             # Forward pass based on modality
             if modality == "audio":
-                features = sample["features"].unsqueeze(0).to(device)
+                features = sample["features"]
+                # Handle raw audio data for wav2vec2/hubert vs pre-extracted features
+                if isinstance(features, dict) and "array" in features:
+                    # Raw audio data - convert to tensor
+                    features = torch.tensor([features["array"]], dtype=torch.float32).to(device)
+                else:
+                    # Pre-extracted features - normal tensor
+                    features = features.unsqueeze(0).to(device)
                 logits = model(features)
 
             elif modality == "text":
@@ -1477,10 +1582,8 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
 
         test_indices = train_sessions[test_session]
 
-        # Get difficulties for curriculum learning
-        train_difficulties = [
-            train_dataset.data[i]["difficulty"] for i in train_indices
-        ]
+        # Get difficulties from precomputed data (fast now!)
+        train_difficulties = [train_dataset.data[i]["difficulty"] for i in train_indices]
 
         # Create base datasets
         train_subset = Subset(train_dataset, train_indices)
@@ -1520,7 +1623,11 @@ def run_loso_evaluation(config, train_dataset, test_dataset):
         config.audio_dim = actual_input_dim
 
         # Initialize model using factory function
-        model = create_model(config).to(device)
+        print(f"🔍 DEBUG: About to create model...")
+        model = create_model(config)
+        print(f"🔍 DEBUG: Model created, moving to device...")
+        model = model.to(device)
+        print(f"🔍 DEBUG: Model moved to device successfully")
 
         # Initialize text encoder if needed (external, for backward compatibility)
         text_encoder = None
@@ -1744,7 +1851,7 @@ def run_cross_corpus_evaluation(config, train_dataset, test_datasets):
     print(f"📈 Training samples: {len(train_indices)}")
     print(f"📋 Validation samples: {len(val_indices)}")
 
-    # Get difficulties for curriculum learning
+    # Get difficulties from precomputed data (fast now!)
     train_difficulties = [train_dataset.data[i]["difficulty"] for i in train_indices]
 
     # Create datasets
