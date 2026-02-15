@@ -7,7 +7,6 @@ Supports: wav2vec2, hubert, emotion2vec, and pre-extracted features
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoFeatureExtractor, Wav2Vec2FeatureExtractor
-import warnings
 
 
 class AudioEncoder(nn.Module):
